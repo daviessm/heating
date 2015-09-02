@@ -12,6 +12,7 @@ from oauth2client import tools
 
 UPDATE_CALENDAR_INTERVAL=30 #seconds
 UPDATE_TEMPERATURE_INTERVAL=60 #seconds
+PROPORTIONAL_HEATING_INTERVAL=30 # minutes
 
 syslog.openlog(logoption=syslog.LOG_PID, facility=syslog.LOG_LOCAL1)
 
@@ -30,12 +31,12 @@ def INFO(text):
 
 def WARN(text):
   output_msg = get_trace_prefix() + text
-  syslog.syslog(syslog.LOG_WARN, output_msg)
+  syslog.syslog(syslog.LOG_WARNING, output_msg)
   print "Warn " + output_msg
 
 def ERROR(text):
   output_msg = get_trace_prefix() + text
-  syslog.syslog(syslog.log_ERROR, output_msg)
+  syslog.syslog(syslog.LOG_ERR, output_msg)
   print "Error " + output_msg
 
 class Relay(object):
@@ -93,13 +94,27 @@ class Heating(object):
     #Sensible defaults
     self.next_event = None
     self.current_temp = 30
+    self.proportional_time = 0
+    self.time_on = None
+    self.time_off = None
 
     self.relay = Relay.find_relay()
+    self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
     #self.temp_sensor = SensorTag.find_sensor()
     
     self.credentials = self.get_credentials()
     #Start getting events
     self.start_threads()
+
+  def on(self, proportion):
+    self.time_on = pytz.utc.localize(datetime.datetime.utcnow())
+    self.proportional_time = proportion
+    self.relay.on()
+
+  def off(self, proportion):
+    self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
+    self.proportional_time = proportion
+    self.relay.off()
 
   def start_threads(self):
     temperature_thread = threading.Thread(target = self.temperature_timer)
@@ -136,8 +151,8 @@ class Heating(object):
       time.sleep(15)
 
   def get_temperature(self):
-    DEBUG("Getting default temperature of 30")
-    self.current_temperature = 30
+    DEBUG("Getting default temperature of 20")
+    self.current_temp = 20
 
   def get_next_event(self):
     http = self.credentials.authorize(httplib2.Http())
@@ -170,28 +185,56 @@ class Heating(object):
     #If we don't have another event, return.
     if not self.next_event:
       DEBUG("No next event available.")
-      self.relay.off()
+      self.off(0)
       return
 
     current_time = pytz.utc.localize(datetime.datetime.utcnow())
     #If next event begins more than three hours in the future, ignore it.
     if ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) > 60*60*3:
       DEBUG("Next event is more than three hours in the future: %s and %s" % (str(self.next_event[0]), str(pytz.utc.localize(datetime.datetime.utcnow()))))
-      self.relay.off()
+      self.off(0)
       return
 
     #Ok, so there's a possibility we might need to turn on.
     #Is the current temperature higher than the next desired temperature?
     if self.current_temp > self.next_event[2]:
-      DEBUG("Current temperature is higher than the desired temperature.")
-      self.relay.off()
+      DEBUG("Current temperature " + str(self.current_temp) + " is higher than the desired temperature " + str(self.next_event[2]))
+      self.off(0)
       return
 
-    #Now, work out whether the heating needs to be on.
-    #If there's a temperature set now, and we're 2 or more degrees below it, turn on.
-    if ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) < 0 and self.current_temp + 2 < self.next_event[2]:
-      self.relay.on()
+    #Calculate the proportional amount of time the heating needs to be on to reach the desired temperature
+    temp_diff = self.next_event[2] - self.current_temp
+
+    new_proportional_time = temp_diff * PROPORTIONAL_HEATING_INTERVAL / 2
+    if new_proportional_time < 10: #Minimum time boiler can be on to be worthwhile
+      new_proportional_time = 10
+    elif new_proportional_time > PROPORTIONAL_HEATING_INTERVAL:
+      new_proportional_time = PROPORTIONAL_HEATING_INTERVAL
+    DEBUG("New proportional time: " + str(new_proportional_time) + " minutes out of " + str(PROPORTIONAL_HEATING_INTERVAL))
+
+    if self.proportional_time == 0:
+      DEBUG("Heating is off, turning on")
+      self.on(new_proportional_time)
       return
+    else:
+      DEBUG("Heating is proportional, shorten or lengthen the time interval as required")
+      #Are we currently on or off?
+      if self.relay.status == 0: #Off
+        time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
+        new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
+        DEBUG("Heating was off, due on at " + str(time_due_on) +". Now due on at " + str(new_time_due_on))
+        if new_time_due_on < current_time:
+          self.on(new_proportional_time)
+          return
+      else: #On  
+        time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
+        new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
+        DEBUG("Heating was on, due off at " + str(time_due_off) +". Now due off at " + str(new_time_due_off))
+        if new_time_due_off < current_time:
+          self.off(new_proportional_time)
+          return
+
+    DEBUG("No change in status necessary.")      
 
   def get_credentials(self):
     """Gets valid user credentials from storage.
@@ -214,23 +257,9 @@ class Heating(object):
     if not credentials or credentials.invalid:
         flow = client.flow_from_clientsecrets('client_secret.json', 'https://www.googleapis.com/auth/calendar.readonly')
         flow.user_agent = 'Heating'
-        credentials = tools.run_flow(flow, store, flags)
+        credentials = tools.run_flow(flow, store, None)
         INFO('Storing credentials to ' + credential_path)
     return credentials
-
-  def self_test(self):
-    INFO("Self-test:")
-    for r in self.relays:
-      INFO("Relay %s" % r)
-      r.on()
-      sleep(1)
-      r.off()
-    DEBUG("Finished relays")
-
-    print ""
-    for t in self.tempers:
-      INFO("Temper %s at %d" % t, t.get_temperature())
-    DEBUG("Finished tempers")
 
 class HttpHandler(BaseHTTPRequestHandler):
   heating = None
