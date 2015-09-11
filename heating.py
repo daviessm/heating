@@ -228,5 +228,4 @@ class NoTemperatureException(Exception):
 
 if __name__ == '__main__':
   heating = Heating()
-  while True:
-    time.sleep(1)
+
