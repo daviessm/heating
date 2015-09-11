@@ -1,20 +1,25 @@
 #!/usr/bin/python
-import datetime, sys, threading, os, syslog, time, inspect, pytz, urlparse, logging, logging.handlers, argparse
+import datetime, sys, threading, os, time, inspect, pytz, urlparse, logging, logging.handlers, argparse, smtplib
 from sensortag import SensorTag
 from relay import Relay
 from httpserver import *
 
 from dateutil import parser
 from apiclient import discovery
+from email.mime.text import MIMEText
+from apscheduler.schedulers.background import BackgroundScheduler
 
 import oauth2client
 from oauth2client import client
 from oauth2client import tools
 
-UPDATE_CALENDAR_INTERVAL=60 #seconds
+UPDATE_CALENDAR_INTERVAL=900 #seconds
 UPDATE_TEMPERATURE_INTERVAL=60 #seconds
 PROPORTIONAL_HEATING_INTERVAL=30 # minutes
 MINIMUM_TEMP=9
+EMAIL_FROM='root@steev.me.uk'
+EMAIL_TO=EMAIL_FROM
+EMAIL_SERVER='localhost'
 
 logger = logging.getLogger('heating')
 logger.setLevel(logging.DEBUG)
@@ -22,7 +27,7 @@ logger.setLevel(logging.DEBUG)
 syslog = logging.handlers.SysLogHandler(address='/dev/log',facility='local0')
 syslog.setLevel(logging.DEBUG)
 stdout = logging.StreamHandler(sys.stdout)
-stdout.setLevel(logging.DEBUG)
+stdout.setLevel(logging.WARN)
 stderr = logging.StreamHandler(sys.stderr)
 stderr.setLevel(logging.ERROR)
 
@@ -40,7 +45,10 @@ logger.addHandler(stderr)
 class Heating(object):
   def __init__(self):
     logger.info('starting')
-    self.processing_lock=threading.Lock()
+    self.processing_lock = threading.Lock()
+    self.calendar_lock = threading.Lock()
+    self.temperature_lock = threading.Lock()
+    self.relay_lock = threading.Lock()
     #Sensible defaults
     self.next_event = None
     self.current_temp = 30.0
@@ -51,20 +59,29 @@ class Heating(object):
     self.relay = Relay.find_relay()
     self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
     self.temp_sensor = SensorTag.find_sensortag()
+    self.get_temperature(0, False)
     
     self.credentials = self.get_credentials()
     #Start getting events
+    self.sched = BackgroundScheduler()
+    self.sched.daemonic = False
+    self.sched.start()
+
     self.start_threads()
 
   def on(self, proportion):
     self.time_on = pytz.utc.localize(datetime.datetime.utcnow())
     self.proportional_time = proportion
+    self.relay_lock.acquire()
     self.relay.on()
+    self.relay_lock.release()
 
   def off(self, proportion):
     self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
     self.proportional_time = proportion
+    self.relay_lock.acquire()
     self.relay.off()
+    self.relay_lock.release()
 
   def start_threads(self):
     temperature_thread = threading.Thread(target = self.temperature_timer)
@@ -82,7 +99,9 @@ class Heating(object):
 
   def temperature_timer(self):
     while(True):
-      self.get_temperature()
+      failures = 0
+      email_sent = False
+      (failures, email_sent) = self.get_temperature(failures, email_sent)
       self.process()
       time.sleep(UPDATE_TEMPERATURE_INTERVAL)
 
@@ -92,20 +111,32 @@ class Heating(object):
       self.process()
       time.sleep(UPDATE_CALENDAR_INTERVAL)
 
-  def get_temperature(self):
-    failures = 0
+  def get_temperature(self, failures, email_sent):
+    self.temperature_lock.acquire()
     try:
       self.current_temp = self.temp_sensor.get_ambient_temp()
       logger.debug('New temperature is ' + str(self.current_temp))
       failures = 0
+      email_sent = False
     except NoTemperatureException as e:
       failures += 1
       logger.warn('No temperature reading! Retrying')
-      if failures > 5:
-        logger.error('Five failures gettimg temperature. Dying.')
-        raise e
+      if failures > 5 and not email_sent:
+        logger.error('Five failures getting temperature.')
+        #Send a warning email
+        msg = MIMEText('Unable to reach SensorTag')
+        msg['Subject'] = __name__
+        msg['From'] = EMAIL_FROM
+        msg['To'] = EMAIL_TO
+        smtp = smtplib.SMTP(EMAIL_SERVER)
+        smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
+        smtp.quit()
+        email_sent = True
+    self.temperature_lock.release()
+    return (failures, email_sent)
 
   def get_next_event(self):
+    self.calendar_lock.acquire()
     http = self.credentials.authorize(httplib2.Http())
     service = discovery.build('calendar', 'v3', http=http)
     
@@ -126,9 +157,12 @@ class Heating(object):
         desired_temp = float(event['summary'])
 	logger.debug('Next event is ' + start + ' to ' + end + ': ' + str(desired_temp) + ' degrees')
         self.next_event = (start_date, end_date, desired_temp)
+        #Set a schedule to get the one after this
+        self.sched.add_job(self.get_next_event, trigger='date', run_date=end)
         break #Just need to get the first valid event
       except ValueError:
         logger.warn(event['summary'] + ' is not a number!')
+    self.calendar_lock.release()
 
   def process(self):
     #Main calculations. Figure out whether the heating needs to be on or not.
