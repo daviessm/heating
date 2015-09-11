@@ -41,6 +41,7 @@ logger.addHandler(stderr)
 class Heating(object):
   def __init__(self):
     logger.info('starting')
+    self.processing_lock=threading.Lock()
     #Sensible defaults
     self.next_event = None
     self.current_temp = 30.0
@@ -75,10 +76,6 @@ class Heating(object):
     calendar_thread.daemon = True
     calendar_thread.start()
 
-    processing_thread = threading.Thread(target = self.processing_timer)
-    processing_thread.daemon = True
-    processing_thread.start()
-
     #Start HTTP server
     HttpHandler.heating = self
     server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
@@ -87,24 +84,20 @@ class Heating(object):
   def temperature_timer(self):
     while(True):
       self.get_temperature()
+      self.process()
       time.sleep(UPDATE_TEMPERATURE_INTERVAL)
 
   def calendar_timer(self):
     while(True):
       self.get_next_event()
-      time.sleep(UPDATE_CALENDAR_INTERVAL)
-
-  def processing_timer(self):
-    while(True):
       self.process()
-      #time.sleep(UPDATE_TEMPERATURE_INTERVAL)
-      time.sleep(15)
+      time.sleep(UPDATE_CALENDAR_INTERVAL)
 
   def get_temperature(self):
     failures = 0
     try:
       self.current_temp = self.temp_sensor.get_ambient_temp()
-      logger.info('New temperature is ' + str(self.current_temp))
+      logger.debug('New temperature is ' + str(self.current_temp))
       failures = 0
     except NoTemperatureException as e:
       failures += 1
@@ -140,73 +133,70 @@ class Heating(object):
 
   def process(self):
     #Main calculations. Figure out whether the heating needs to be on or not.
+    self.processing_lock.acquire()
+    current_time = pytz.utc.localize(datetime.datetime.utcnow())
 
-    #If we're below the minimum allowed temperature, turn on.
     if self.current_temp < MINIMUM_TEMP:
+      #If we're below the minimum allowed temperature, turn on.
       logger.debug('Temperature is below minimum, turning on')
-      return
+      self.on(PROPORTIONAL_HEATING_INTERVAL)
 
-    #If we don't have another event, return.
-    if not self.next_event:
+    elif not self.next_event:
+      #If we don't have another event, return.
       logger.debug("No next event available.")
       self.off(0)
-      return
 
-    current_time = pytz.utc.localize(datetime.datetime.utcnow())
-    #If next event begins more than three hours in the future, ignore it.
-    if ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) > 60*60*3:
-      logger.debug("Next event is more than three hours in the future: %s and %s" % (str(self.next_event[0]), str(pytz.utc.localize(datetime.datetime.utcnow()))))
+    elif ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) > 60*60*3:
+      #If next event begins more than three hours in the future, ignore it.
+      logger.debug("Next event is more than three hours in the future: %s" % (str(self.next_event[0])))
       self.off(0)
-      return
 
-    #Ok, so there's a possibility we might need to turn on.
-    #Is the current temperature higher than the next desired temperature?
-    if self.current_temp > self.next_event[2]:
+    elif self.current_temp > self.next_event[2]:
+      #Ok, so there's a possibility we might need to turn on.
+      #Is the current temperature higher than the next desired temperature?
       logger.debug("Current temperature " + str(self.current_temp) + " is higher than the desired temperature " + str(self.next_event[2]))
       self.off(0)
-      return
 
-    #Calculate the proportional amount of time the heating needs to be on to reach the desired temperature
-    temp_diff = self.next_event[2] - self.current_temp
-
-    new_proportional_time = temp_diff * PROPORTIONAL_HEATING_INTERVAL / 2
-    if new_proportional_time < 10: #Minimum time boiler can be on to be worthwhile
-      new_proportional_time = 10
-    elif new_proportional_time > PROPORTIONAL_HEATING_INTERVAL:
-      new_proportional_time = PROPORTIONAL_HEATING_INTERVAL
-    logger.debug("New proportional time: " + str(new_proportional_time) + " minutes out of " + str(PROPORTIONAL_HEATING_INTERVAL))
-
-    #Start half an hour earlier for each degree the heating is below the desired temp
-    if ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) < 60*60*3 \
-         and ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) > 0:
-      time_due_on = self.next_event[0] - datetime.timedelta(0,temp_diff * 30 * 60)
-      logger.debug("Initial warm-up, temp difference is " + str(temp_diff) + "; next event is at " + str(time_due_on))
-      if time_due_on < current_time:
-        self.on(new_propotional_time)
     else:
-      if self.proportional_time == 0:
-        logger.debug("Heating is off, turning on")
-        self.on(new_proportional_time)
-        return
-      else:
-        logger.debug("Heating is proportional, shorten or lengthen the time interval as required")
-        #Are we currently on or off?
-        if self.relay.status == 0: #Off
-          time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
-          new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
-          logger.debug("Heating was off, due on at " + str(time_due_on) +". Now due on at " + str(new_time_due_on))
-          if new_time_due_on < current_time:
-            self.on(new_proportional_time)
-            return
-        else: #On  
-          time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
-          new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
-          logger.debug("Heating was on, due off at " + str(time_due_off) +". Now due off at " + str(new_time_due_off))
-          if new_time_due_off < current_time:
-            self.off(new_proportional_time)
-            return
+      #Calculate the proportional amount of time the heating needs to be on to reach the desired temperature
+      temp_diff = self.next_event[2] - self.current_temp
 
-    logger.debug("No change in status necessary.")      
+      new_proportional_time = temp_diff * PROPORTIONAL_HEATING_INTERVAL / 2
+      if new_proportional_time < 10: #Minimum time boiler can be on to be worthwhile
+        new_proportional_time = 10
+      elif new_proportional_time > PROPORTIONAL_HEATING_INTERVAL:
+        new_proportional_time = PROPORTIONAL_HEATING_INTERVAL
+      logger.debug("New proportional time: " + str(new_proportional_time) + " minutes out of " + str(PROPORTIONAL_HEATING_INTERVAL))
+
+      #Start half an hour earlier for each degree the heating is below the desired temp
+      if ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) < 60*60*3 \
+           and ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) > 0:
+        time_due_on = self.next_event[0] - datetime.timedelta(0,temp_diff * 30 * 60)
+        logger.debug("Initial warm-up, temp difference is " + str(temp_diff) + "; next event is at " + str(time_due_on))
+        if time_due_on < current_time:
+          self.on(new_propotional_time)
+      else:
+        if self.proportional_time == 0:
+          logger.debug("Heating is off, turning on")
+          self.on(new_proportional_time)
+        else:
+          logger.debug("Heating is proportional, shorten or lengthen the time interval as required")
+          #Are we currently on or off?
+          if self.relay.status == 0: #Off
+            time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
+            new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
+            logger.debug("Heating was off, due on at " + str(time_due_on) +". Now due on at " + str(new_time_due_on))
+            if new_time_due_on < current_time:
+              self.on(new_proportional_time)
+          else: #On  
+            time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
+            new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
+            logger.debug("Heating was on, due off at " + str(time_due_off) +". Now due off at " + str(new_time_due_off))
+            if new_time_due_off < current_time:
+              self.off(new_proportional_time)
+
+    logger.debug('Releasing processing lock')
+    self.processing_lock.release()     
 
   def get_credentials(self):
     """Gets valid user credentials from storage.
