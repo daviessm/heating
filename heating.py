@@ -1,5 +1,7 @@
 #!/usr/bin/python
-import datetime, sys, threading, usb, httplib2, os, syslog, time, inspect, pytz, urlparse, pygatt, struct, argparse
+import datetime, sys, threading, httplib2, os, syslog, time, inspect, pytz, urlparse, logging, logging.handlers, argparse
+from sensortag import SensorTag
+from relay import Relay
 
 from dateutil import parser
 from apiclient import discovery
@@ -15,134 +17,30 @@ UPDATE_TEMPERATURE_INTERVAL=60 #seconds
 PROPORTIONAL_HEATING_INTERVAL=30 # minutes
 MINIMUM_TEMP=9
 
-syslog.openlog(logoption=syslog.LOG_PID, facility=syslog.LOG_LOCAL1)
+logger = logging.getLogger('heating')
+logger.setLevel(logging.DEBUG)
 
-def get_trace_prefix():
-  return inspect.stack()[2][3] + '@' + str(inspect.stack()[2][2]) + ': '
+syslog = logging.handlers.SysLogHandler(address='/dev/log',facility='local0')
+syslog.setLevel(logging.DEBUG)
+stdout = logging.StreamHandler(sys.stdout)
+stdout.setLevel(logging.DEBUG)
+stderr = logging.StreamHandler(sys.stderr)
+stderr.setLevel(logging.ERROR)
 
-def DEBUG(text):
-  output_msg = get_trace_prefix() + text
-  syslog.syslog(syslog.LOG_DEBUG, output_msg)
-  print "Debug " + output_msg
+syslog_formatter = logging.Formatter('%(filename)s@%(lineno)s %(msg)s')
+console_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s@%(lineno)s %(msg)s')
 
-def INFO(text):
-  output_msg = get_trace_prefix() + text
-  syslog.syslog(syslog.LOG_INFO, output_msg)
-  print "Info " + output_msg
+syslog.setFormatter(syslog_formatter)
+stdout.setFormatter(console_formatter)
+stderr.setFormatter(console_formatter)
 
-def WARN(text):
-  output_msg = get_trace_prefix() + text
-  syslog.syslog(syslog.LOG_WARNING, output_msg)
-  print "Warn " + output_msg
-
-def ERROR(text):
-  output_msg = get_trace_prefix() + text
-  syslog.syslog(syslog.LOG_ERR, output_msg)
-  print "Error " + output_msg
-
-class Relay(object):
-  def __init__(self,device):
-    #Assume relay is on until turned off
-    self.status = 1
-
-    self.hid_device = device
-    if self.hid_device.is_kernel_driver_active(0):
-      try:
-        self.hid_device.detach_kernel_driver(0)
-      except usb.core.USBError as e:
-        sys.exit("Could not detatch kernel driver: %s" % str(e))
-    try:
-      self.hid_device.set_configuration()
-      self.hid_device.reset()
-    except usb.core.USBError as e:
-      sys.exit("Could not set configuration: %s" % str(e))
-
-    self.off()
-
-  def __sendmsg(self,data):
-    sentmsg = "".join(chr(n) for n in data)
-    self.hid_device.ctrl_transfer(0x21,0x09,0x0300,0x00,sentmsg,1000)
-
-  def on(self):
-    if self.status == 0:
-      INFO("Relay ON")
-      self.__sendmsg([0xFE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-      self.status = 1
-
-  def off(self):
-    if self.status == 1:
-      INFO("Relay OFF")
-      self.__sendmsg([0xFC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-      self.status = 0
-
-  @staticmethod
-  def find_relay():
-    hid_devices = usb.core.find(find_all=True,idVendor=0x16c0,idProduct=0x05df)
-    relays = []
-    for hid_device in hid_devices:
-      relays.append(Relay(hid_device))
-    if len(relays) < 1:
-      ERROR("No relays found")
-      raise Exception("No relays found")
-    if len(relays) > 1:
-      ERROR("Only one relay allowed!")
-      raise Exception("Only one relay allowed!")
-    
-    return relays[0]
-
-class SensorTag(object):
-  def __init__(self, dongle, mac):
-    self.mac = mac
-    self.dongle = dongle
-    self.connect()
-
-  def connect(self):
-    self.tag = pygatt.BluetoothLEDevice(self.mac, self.dongle)
-    self.tag.connect()
-
-  def disconnect(self):
-    self.tag.stop()
-
-  def get_ambient_temp(self):
-    try:
-      #Turn red LED on
-      self.tag.char_write_handle(0x4e, bytearray([0x01]))
-      self.tag.char_write_handle(0x50, bytearray([0x01]))
-
-      #Turn temperature sensor on
-      self.tag.char_write_handle(0x24, bytearray([0x01]))
-
-      #Wait for reading
-      time.sleep(0.3)
-      result = self.tag.char_read_handle(0x21)
-
-      #Turn temperature sensor off
-      self.tag.char_write_handle(0x24, bytearray([0x00]))
-
-      #Turn red LED off
-      self.tag.char_write_handle(0x4e, bytearray([0x00]))
-      self.tag.char_write_handle(0x50, bytearray([0x00]))
-    except NotConnectedError as e:
-      self.connect()
-      raise NoTemperatureException
-
-    (rawVobj, rawTamb) = struct.unpack('<hh', result)
-    tAmb = rawTamb / 128.0
-    return tAmb
-
-  @staticmethod
-  def find_sensortag():
-    dongle = pygatt.backends.GATTToolBackend()
-    DEBUG('Scanning for SensorTags')
-    devices = dongle.scan()
-    for device in devices:
-      if device['name'] == 'CC2650':
-        INFO('Found SensorTag with address: ' + device['address'])
-        return SensorTag(dongle, device['address'])
-    raise Exception('No SensorTags found!')
+logger.addHandler(syslog)
+logger.addHandler(stdout)
+logger.addHandler(stderr)
 
 class Heating(object):
   def __init__(self):
+    logger.info('starting')
     #Sensible defaults
     self.next_event = None
     self.current_temp = 30.0
@@ -206,13 +104,13 @@ class Heating(object):
     failures = 0
     try:
       self.current_temp = self.temp_sensor.get_ambient_temp()
-      INFO('New temperature is ' + str(self.current_temp))
+      logger.info('New temperature is ' + str(self.current_temp))
       failures = 0
     except NoTemperatureException as e:
       failures += 1
-      WARN('No temperature reading! Retrying')
+      logger.warn('No temperature reading! Retrying')
       if failures > 5:
-        ERROR('Five failures gettimg temperature. Dying.')
+        logger.error('Five failures gettimg temperature. Dying.')
         raise e
 
   def get_next_event(self):
@@ -220,13 +118,13 @@ class Heating(object):
     service = discovery.build('calendar', 'v3', http=http)
     
     now = datetime.datetime.utcnow().isoformat() + 'Z'
-    DEBUG('Getting the next event')
+    logger.debug('Getting the next event')
     eventsResult = service.events().list(
         calendarId='fkjecfkial36lojtvjlua77qio@group.calendar.google.com', timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
     events = eventsResult.get('items', [])
 
     if not events:
-      INFO('No upcoming events found.')
+      logger.info('No upcoming events found.')
     for event in events:
       start = event['start'].get('dateTime', event['start'].get('date'))
       start_date = parser.parse(start)
@@ -234,37 +132,37 @@ class Heating(object):
       end_date = parser.parse(end)
       try:
         desired_temp = float(event['summary'])
-	DEBUG('Next event is ' + start + ' to ' + end + ': ' + str(desired_temp) + ' degrees')
+	logger.debug('Next event is ' + start + ' to ' + end + ': ' + str(desired_temp) + ' degrees')
         self.next_event = (start_date, end_date, desired_temp)
         break #Just need to get the first valid event
       except ValueError:
-        WARN(event['summary'] + ' is not a number!')
+        logger.warn(event['summary'] + ' is not a number!')
 
   def process(self):
     #Main calculations. Figure out whether the heating needs to be on or not.
 
     #If we're below the minimum allowed temperature, turn on.
     if self.current_temp < MINIMUM_TEMP:
-      DEBUG('Temperature is below minimum, turning on')
+      logger.debug('Temperature is below minimum, turning on')
       return
 
     #If we don't have another event, return.
     if not self.next_event:
-      DEBUG("No next event available.")
+      logger.debug("No next event available.")
       self.off(0)
       return
 
     current_time = pytz.utc.localize(datetime.datetime.utcnow())
     #If next event begins more than three hours in the future, ignore it.
     if ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) > 60*60*3:
-      DEBUG("Next event is more than three hours in the future: %s and %s" % (str(self.next_event[0]), str(pytz.utc.localize(datetime.datetime.utcnow()))))
+      logger.debug("Next event is more than three hours in the future: %s and %s" % (str(self.next_event[0]), str(pytz.utc.localize(datetime.datetime.utcnow()))))
       self.off(0)
       return
 
     #Ok, so there's a possibility we might need to turn on.
     #Is the current temperature higher than the next desired temperature?
     if self.current_temp > self.next_event[2]:
-      DEBUG("Current temperature " + str(self.current_temp) + " is higher than the desired temperature " + str(self.next_event[2]))
+      logger.debug("Current temperature " + str(self.current_temp) + " is higher than the desired temperature " + str(self.next_event[2]))
       self.off(0)
       return
 
@@ -276,39 +174,39 @@ class Heating(object):
       new_proportional_time = 10
     elif new_proportional_time > PROPORTIONAL_HEATING_INTERVAL:
       new_proportional_time = PROPORTIONAL_HEATING_INTERVAL
-    DEBUG("New proportional time: " + str(new_proportional_time) + " minutes out of " + str(PROPORTIONAL_HEATING_INTERVAL))
+    logger.debug("New proportional time: " + str(new_proportional_time) + " minutes out of " + str(PROPORTIONAL_HEATING_INTERVAL))
 
     #Start half an hour earlier for each degree the heating is below the desired temp
     if ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) < 60*60*3 \
          and ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) > 0:
       time_due_on = self.next_event[0] - datetime.timedelta(0,temp_diff * 30 * 60)
-      DEBUG("Initial warm-up, temp difference is " + str(temp_diff) + "; next event is at " + str(time_due_on))
+      logger.debug("Initial warm-up, temp difference is " + str(temp_diff) + "; next event is at " + str(time_due_on))
       if time_due_on < current_time:
         self.on(new_propotional_time)
     else:
       if self.proportional_time == 0:
-        DEBUG("Heating is off, turning on")
+        logger.debug("Heating is off, turning on")
         self.on(new_proportional_time)
         return
       else:
-        DEBUG("Heating is proportional, shorten or lengthen the time interval as required")
+        logger.debug("Heating is proportional, shorten or lengthen the time interval as required")
         #Are we currently on or off?
         if self.relay.status == 0: #Off
           time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
           new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
-          DEBUG("Heating was off, due on at " + str(time_due_on) +". Now due on at " + str(new_time_due_on))
+          logger.debug("Heating was off, due on at " + str(time_due_on) +". Now due on at " + str(new_time_due_on))
           if new_time_due_on < current_time:
             self.on(new_proportional_time)
             return
         else: #On  
           time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
           new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
-          DEBUG("Heating was on, due off at " + str(time_due_off) +". Now due off at " + str(new_time_due_off))
+          logger.debug("Heating was on, due off at " + str(time_due_off) +". Now due off at " + str(new_time_due_off))
           if new_time_due_off < current_time:
             self.off(new_proportional_time)
             return
 
-    DEBUG("No change in status necessary.")      
+    logger.debug("No change in status necessary.")      
 
   def get_credentials(self):
     """Gets valid user credentials from storage.
@@ -334,7 +232,7 @@ class Heating(object):
         flow = client.flow_from_clientsecrets('client_secret.json', 'https://www.googleapis.com/auth/calendar.readonly')
         flow.user_agent = 'Heating'
         credentials = tools.run_flow(flow, store, flags)
-        INFO('Storing credentials to ' + credential_path)
+        logger.info('Storing credentials to ' + credential_path)
     return credentials
 
 class HttpHandler(BaseHTTPRequestHandler):
@@ -343,12 +241,12 @@ class HttpHandler(BaseHTTPRequestHandler):
   def do_GET(self):
     parsed_path = urlparse.urlparse(self.path)
     if parsed_path.path == "/temp":
-      DEBUG("Web request for /temp, sending response " + str(self.heating.current_temp))
+      logger.debug("Web request for /temp, sending response " + str(self.heating.current_temp))
       self.send_response(200)
       self.end_headers()
       self.wfile.write(str(self.heating.current_temp) + "\n")
     elif parsed_path.path == "/proportion":
-      DEBUG("Web request for /proportion, sending response " + str(self.heating.proportional_time))
+      logger.debug("Web request for /proportion, sending response " + str(self.heating.proportional_time))
       self.send_response(200)
       self.end_headers()
       self.wfile.write(str(self.heating.proportional_time) + "\n")
