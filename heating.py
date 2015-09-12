@@ -100,7 +100,7 @@ class Heating(object):
       self.proportional_off_job = self.sched.add_job(\
         self.get_next_event, trigger='date',\
         run_date=run_date,\
-        name='Proportional off at ' + run_date.astimezone(LOCAL_TIMEZONE))
+        name='Proportional off at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
 
   def start_threads(self):
     temperature_thread = threading.Thread(target = self.temperature_timer)
