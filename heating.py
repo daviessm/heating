@@ -202,7 +202,7 @@ class Heating(object):
 
     elif ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) > 60*60*3:
       #If next event begins more than three hours in the future, ignore it.
-      logger.debug('Next event is more than three hours in the future: %s' % (str(self.next_event[0]).astimezone(LOCAL_TIMEZONE)))
+      logger.debug('Next event is more than three hours in the future: ' + str(self.next_event[0].astimezone(LOCAL_TIMEZONE)))
       self.off(0)
 
     elif self.current_temp > self.next_event[2]:
