@@ -18,6 +18,6 @@ Since there's so little code available for these devices on the internet, please
 
 The control code I have for the relay was written by Patrick Jahns (patrick.jahns@gmail.com; https://github.com/patrickjahns/simpleusbrelay) and is released under the MIT license as described on his Github.
 
-This project probably needs pyUSB v1.0b4 and a load of other things.
+This project probably needs pyUSB v1.0b2, pyserial, google-api-python-client, pexpect, enum34, python-dateutil, APScheduler, pytz and a load of other things.
 
 
