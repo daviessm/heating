@@ -1,4 +1,4 @@
-import httplib2, logging, urlparse
+import httplib2, logging, urlparse, pytz, datetime
 
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
 from SocketServer import ThreadingMixIn
@@ -16,8 +16,8 @@ class HttpHandler(BaseHTTPRequestHandler):
       self.end_headers()
       self.wfile.write(str(self.heating.current_temp) + '\n')
     elif parsed_path.path == '/desired_temp':
-      if not self.heating.next_event:
-        desired_temp = str(MINIMUM_TEMP)
+      if not self.heating.next_event or self.heating.next_event[0] > pytz.utc.localize(datetime.datetime.utcnow()):
+        desired_temp = str(self.heating.minimum_temp)
       else:
         desired_temp = str(self.heating.next_event[2])
       logger.debug('Web request for /desired_temp, sending ' + desired_temp)

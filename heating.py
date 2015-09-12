@@ -66,6 +66,7 @@ class Heating(object):
     self.proportional_time = 0
     self.time_on = None
     self.time_off = None
+    self.minimum_temp = MINIMUM_TEMP
 
     self.relay = Relay.find_relay()
     self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
@@ -95,7 +96,7 @@ class Heating(object):
     self.relay_lock.release()
     if self.proportional_off_job:
       self.proportional_off_job.remove()
-    if proportion < PROPORTIONAL_HEATING_INTERVAL:
+    if proportion < PROPORTIONAL_HEATING_INTERVAL and self.time_on:
       run_date = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
       self.proportional_off_job = self.sched.add_job(\
         self.get_next_event, trigger='date',\
