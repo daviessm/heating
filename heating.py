@@ -1,6 +1,6 @@
 #!/usr/bin/python
-import datetime, sys, threading, os, time, inspect, pytz, urlparse, logging, logging.handlers, argparse, smtplib
-from sensortag import SensorTag
+import datetime, sys, threading, os, time, inspect, pytz, logging, logging.handlers, argparse, smtplib
+from sensortag import SensorTag, NoTemperatureException
 from relay import Relay
 from httpserver import *
 
@@ -20,6 +20,7 @@ MINIMUM_TEMP=9
 EMAIL_FROM='root@steev.me.uk'
 EMAIL_TO=EMAIL_FROM
 EMAIL_SERVER='localhost'
+LOCAL_TIMEZONE=pytz.timezone('Europe/London')
 
 logger = logging.getLogger('heating')
 logger.setLevel(logging.DEBUG)
@@ -42,13 +43,23 @@ logger.addHandler(syslog)
 logger.addHandler(stdout)
 logger.addHandler(stderr)
 
+sched_logger = logging.getLogger('apscheduler')
+sched_logger.setLevel(logging.DEBUG)
+
+sched_logger.addHandler(syslog)
+sched_logger.addHandler(stdout)
+sched_logger.addHandler(stderr)
+
 class Heating(object):
   def __init__(self):
-    logger.info('starting')
+    logger.info('Starting')
     self.processing_lock = threading.Lock()
     self.calendar_lock = threading.Lock()
     self.temperature_lock = threading.Lock()
     self.relay_lock = threading.Lock()
+
+    self.proportional_off_job = None
+    self.next_event_end_job = None
     #Sensible defaults
     self.next_event = None
     self.current_temp = 30.0
@@ -82,6 +93,14 @@ class Heating(object):
     self.relay_lock.acquire()
     self.relay.off()
     self.relay_lock.release()
+    if self.proportional_off_job:
+      self.proportional_off_job.remove()
+    if proportion < PROPORTIONAL_HEATING_INTERVAL:
+      run_date = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
+      self.proportional_off_job = self.sched.add_job(\
+        self.get_next_event, trigger='date',\
+        run_date=run_date,\
+        name='Proportional off at ' + run_date.astimezone(LOCAL_TIMEZONE))
 
   def start_threads(self):
     temperature_thread = threading.Thread(target = self.temperature_timer)
@@ -115,7 +134,6 @@ class Heating(object):
     self.temperature_lock.acquire()
     try:
       self.current_temp = self.temp_sensor.get_ambient_temp()
-      logger.debug('New temperature is ' + str(self.current_temp))
       failures = 0
       email_sent = False
     except NoTemperatureException as e:
@@ -156,9 +174,12 @@ class Heating(object):
       try:
         desired_temp = float(event['summary'])
 	logger.debug('Next event is ' + start + ' to ' + end + ': ' + str(desired_temp) + ' degrees')
-        self.next_event = (start_date, end_date, desired_temp)
+        self.next_event = (start_date.replace(tzinfo=pytz.utc), end_date.replace(tzinfo=pytz.utc), desired_temp)
         #Set a schedule to get the one after this
-        self.sched.add_job(self.get_next_event, trigger='date', run_date=end)
+        if self.next_event_end_job:
+          self.next_event_end_job.remove()
+        self.next_event_end_job = self.sched.add_job(self.get_next_event,\
+          trigger='date', run_date=end, name='Event end at ' + str(end_date.astimezone(LOCAL_TIMEZONE)))
         break #Just need to get the first valid event
       except ValueError:
         logger.warn(event['summary'] + ' is not a number!')
@@ -181,7 +202,7 @@ class Heating(object):
 
     elif ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) > 60*60*3:
       #If next event begins more than three hours in the future, ignore it.
-      logger.debug('Next event is more than three hours in the future: %s' % (str(self.next_event[0])))
+      logger.debug('Next event is more than three hours in the future: %s' % (str(self.next_event[0]).astimezone(LOCAL_TIMEZONE)))
       self.off(0)
 
     elif self.current_temp > self.next_event[2]:
@@ -194,6 +215,7 @@ class Heating(object):
       #Calculate the proportional amount of time the heating needs to be on to reach the desired temperature
       temp_diff = self.next_event[2] - self.current_temp
 
+      #Start half an hour earlier for each degree the heating is below the desired temp
       new_proportional_time = temp_diff * PROPORTIONAL_HEATING_INTERVAL / 2
       if new_proportional_time < 10: #Minimum time boiler can be on to be worthwhile
         new_proportional_time = 10
@@ -201,34 +223,42 @@ class Heating(object):
         new_proportional_time = PROPORTIONAL_HEATING_INTERVAL
       logger.debug('New proportional time: ' + str(new_proportional_time) + ' minutes out of ' + str(PROPORTIONAL_HEATING_INTERVAL))
 
-      #Start half an hour earlier for each degree the heating is below the desired temp
+      #If there's less than three hours to the next event and the next event does not begin in the past, this is the initial warm-up
       if ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) < 60*60*3 \
            and ((self.next_event[0] - current_time).seconds) + ((self.next_event[0] - current_time).days*24*60*60) > 0:
         time_due_on = self.next_event[0] - datetime.timedelta(0,temp_diff * 30 * 60)
-        logger.debug('Initial warm-up, temp difference is ' + str(temp_diff) + '; next event is at ' + str(time_due_on))
+        logger.debug('Initial warm-up, temp difference is ' + str(temp_diff) + '; next event is at ' + str(time_due_on).astimezone(LOCAL_TIMEZONE))
         if time_due_on < current_time:
           self.on(new_propotional_time)
+      #Desired temp must be higher than current temp
       else:
         if self.proportional_time == 0:
           logger.debug('Heating is off, turning on')
           self.on(new_proportional_time)
         else:
-          logger.debug('Heating is proportional, shorten or lengthen the time interval as required')
+          #logger.debug('Heating is proportional, shorten or lengthen the time interval as required')
           #Are we currently on or off?
           if self.relay.status == 0: #Off
             time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
             new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
-            logger.debug('Heating was off, due on at ' + str(time_due_on) +'. Now due on at ' + str(new_time_due_on))
+            logger.debug('Heating was off, due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)) +\
+                         '. Now due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)))
             if new_time_due_on < current_time:
               self.on(new_proportional_time)
-          else: #On  
-            time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
-            new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
-            logger.debug('Heating was on, due off at ' + str(time_due_off) +'. Now due off at ' + str(new_time_due_off))
-            if new_time_due_off < current_time:
-              self.off(new_proportional_time)
+          else: #On
+            if new_proportional_time < PROPORTIONAL_HEATING_INTERVAL:
+              time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
+              new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
+              if new_time_due_off < current_time:
+                logger.debug('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +'. Turning off')
+                self.off(new_proportional_time)
+              else:
+                logger.debug('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +\
+                             '. Now due off at ' + str(new_time_due_off.astimezone(LOCAL_TIMEZONE)))
+                self.proportional_time = new_proportional_time
+            else:
+              logger.debug('Heating is on for maximum interval. Leaving on.')
 
-    logger.debug('Releasing processing lock')
     self.processing_lock.release()     
 
   def get_credentials(self):
@@ -257,9 +287,10 @@ class Heating(object):
       logger.info('Storing credentials to ' + credential_path)
     return credentials
 
-class NoTemperatureException(Exception):
-  pass
-
 if __name__ == '__main__':
-  heating = Heating()
+  try:
+    heating = Heating()
+  except Exception as e:
+    logger.exception('Exception in main thread. Exiting.')
+    sys.exit(1)
 

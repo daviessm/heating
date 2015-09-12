@@ -40,6 +40,7 @@ class SensorTag(object):
 
     (rawVobj, rawTamb) = struct.unpack('<hh', result)
     tAmb = rawTamb / 128.0
+    logger.debug('Got temperature ' + str(tAmb))
     return tAmb
 
   @staticmethod
@@ -52,4 +53,7 @@ class SensorTag(object):
         logger.info('Found SensorTag with address: ' + device['address'])
         return SensorTag(dongle, device['address'])
     raise Exception('No SensorTags found!')
+
+class NoTemperatureException(Exception):
+  pass
 
