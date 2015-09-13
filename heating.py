@@ -35,6 +35,7 @@ class Heating(object):
     self.temperature_lock = threading.Lock()
     self.relay_lock = threading.Lock()
 
+    self.proportional_on_job = None
     self.proportional_off_job = None
     self.next_event_end_job = None
     #Sensible defaults
@@ -50,7 +51,6 @@ class Heating(object):
     self.relay = Relay.find_relay()
     self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
     self.temp_sensors = SensorTag.find_sensortags()
-    self.get_temperature()
     
     self.credentials = self.get_credentials()
     #Start getting events
@@ -66,6 +66,18 @@ class Heating(object):
     self.relay_lock.acquire()
     self.relay.on()
     self.relay_lock.release()
+    if self.proportional_on_job:
+      self.proportional_on_job.remove()
+      self.proportional_on_job = None
+    if self.proportional_off_job:
+      self.proportional_off_job.remove()
+      self.proportional_off_job = None
+    if proportion < PROPORTIONAL_HEATING_INTERVAL and self.time_on:
+      run_date = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
+      self.proportional_off_job = self.sched.add_job(\
+        self.process, trigger='date',\
+        run_date=run_date, timezone=LOCAL_TIMEZONE,\
+        name='Proportional off at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
 
   def off(self, proportion):
     self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
@@ -73,14 +85,18 @@ class Heating(object):
     self.relay_lock.acquire()
     self.relay.off()
     self.relay_lock.release()
+    if self.proportional_on_job:
+      self.proportional_on_job.remove()
+      self.proportional_on_job = None
     if self.proportional_off_job:
       self.proportional_off_job.remove()
-    if proportion < PROPORTIONAL_HEATING_INTERVAL and self.time_on:
-      run_date = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
-      self.proportional_off_job = self.sched.add_job(\
-        self.get_next_event, trigger='date',\
+      self.proportional_off_job = None
+    run_date = self.time_off + datetime.timedelta(0,PROPORTIONAL_HEATING_INTERVAL - self.proportional_time * 60)
+    if proportion > 0:
+      self.proportional_on_job = self.sched.add_job(\
+        self.process, trigger='date',\
         run_date=run_date, timezone=LOCAL_TIMEZONE,\
-        name='Proportional off at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
+        name='Proportional on at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
 
   def start_threads(self):
     temperature_thread = threading.Thread(target = self.temperature_timer)
@@ -116,7 +132,7 @@ class Heating(object):
         temps.append(sensor.get_ambient_temp())
       except NoTemperatureException as e:
         sensor.failures += 1
-        logger.warn('No temperature reading from ' + sensor.mac + '! Retrying')
+        logger.warn(str(e) + 'Retrying')
         if sensor.failures > 5 and not sensor.sent_alert:
           logger.error('Five failures getting temperature from ' + sensor.mac)
           #Send a warning email
@@ -161,6 +177,7 @@ class Heating(object):
         #Set a schedule to get the one after this
         if self.next_event_end_job:
           self.next_event_end_job.remove()
+          self.next_event_end_job = None
         self.next_event_end_job = self.sched.add_job(self.get_next_event,\
           trigger='date', run_date=end_date, timezone=LOCAL_TIMEZONE, name='Event end at ' + str(end_date.astimezone(LOCAL_TIMEZONE)))
         break #Just need to get the first valid event
@@ -279,8 +296,8 @@ def main():
   try:
     heating.start()
   except Exception as e:
-    heating.relay.off()
     logger.exception('Exception in main thread. Exiting.')
+    heating.relay.off()
     sys.exit(1)
 
 if __name__ == '__main__':
