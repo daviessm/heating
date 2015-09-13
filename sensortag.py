@@ -29,26 +29,35 @@ class SensorTag(object):
       #Turn temperature sensor on
       self.tag.char_write_handle(0x24, bytearray([0x01]))
 
-      #Wait for reading
-      time.sleep(0.3)
-      result = self.tag.char_read_handle(0x21)
-
-      #Turn temperature sensor off
-      self.tag.char_write_handle(0x24, bytearray([0x00]))
+      time.sleep(0.1)
 
       #Turn red LED off
       self.tag.char_write_handle(0x4e, bytearray([0x00]))
       self.tag.char_write_handle(0x50, bytearray([0x00]))
-    except pygatt.exceptions.NotConnectedError as nce1:
+
+      #Wait for reading
+      tAmb = 0
+      count = 0
+      while tAmb == 0 and count < 20:
+        count += 1
+        time.sleep(0.1)
+        result = self.tag.char_read_handle(0x21)
+        (rawVobj, rawTamb) = struct.unpack('<hh', result)
+        tAmb = rawTamb / 128.0
+
+      #Turn temperature sensor off
+      self.tag.char_write_handle(0x24, bytearray([0x00]))
+
+    except NotConnectedError as nce1:
       try:
         self.connect()
       except NotConnectedError as nce2:
         self.failures += 1
-      raise NoTemperatureException('Unable to read temperature from ' + self.mac)
+      raise NoTemperatureException(str(nce1) + ' unable to read temperature from ' + self.mac)
 
-    (rawVobj, rawTamb) = struct.unpack('<hh', result)
-    tAmb = rawTamb / 128.0
     logger.info('Got temperature ' + str(tAmb) + ' from ' + self.mac)
+    if tAmb == 0:
+      raise NoTemperatureException('Got zero temperature from ' + self.mac)
     self.amb_temp = tAmb
     return self.amb_temp
 
