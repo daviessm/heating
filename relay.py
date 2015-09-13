@@ -5,7 +5,7 @@ logger = logging.getLogger('heating')
 class Relay(object):
   def __init__(self,device):
     #Assume relay is on until turned off
-    self.status = 1
+    self.status = 0
 
     self.hid_device = device
     if self.hid_device.is_kernel_driver_active(0):
@@ -19,7 +19,8 @@ class Relay(object):
     except usb.core.USBError as e:
       raise Exception("Could not set configuration: %s" % str(e))
 
-    self.off()
+    #Turn off at start
+    self.__sendmsg([0xFC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
 
   def __sendmsg(self,data):
     sentmsg = "".join(chr(n) for n in data)
