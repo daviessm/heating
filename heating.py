@@ -18,6 +18,7 @@ UPDATE_CALENDAR_INTERVAL=900 #seconds
 UPDATE_TEMPERATURE_INTERVAL=60 #seconds
 PROPORTIONAL_HEATING_INTERVAL=30 # minutes
 MINIMUM_TEMP=9
+CALENDAR_ID='fkjecfkial36lojtvjlua77qio@group.calendar.google.com'
 EMAIL_FROM='root@steev.me.uk'
 EMAIL_TO=EMAIL_FROM
 EMAIL_SERVER='localhost'
@@ -143,7 +144,7 @@ class Heating(object):
     now = datetime.datetime.utcnow().isoformat() + 'Z'
     logger.debug('Getting the next event')
     eventsResult = service.events().list(
-        calendarId='fkjecfkial36lojtvjlua77qio@group.calendar.google.com', timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
+        calendarId=CALENDAR_ID, timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
     events = eventsResult.get('items', [])
 
     if not events:
