@@ -36,6 +36,12 @@ class HttpHandler(BaseHTTPRequestHandler):
       self.send_response(200)
       self.end_headers()
       self.wfile.write(str(self.heating.proportional_time) + '\n')
+    elif parsed_path.path == '/refresh/events':
+      logger.info('Web request for /refresh/events, sending ' + str(self.heating.next_event))
+      self.heating.get_next_event()
+      self.send_response(200)
+      self.end_headers()
+      self.wfile.write(str(self.heating.next_event) + '\n')
     else:
       logger.info('Web request for ' + parsed_path.path + ', ignoring')
       self.send_error(404)
