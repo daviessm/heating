@@ -23,14 +23,10 @@ class HttpHandler(BaseHTTPRequestHandler):
       self.end_headers()
       self.wfile.write(response)
     elif parsed_path.path == '/desired_temp':
-      if not self.heating.next_event or self.heating.next_event[0] > pytz.utc.localize(datetime.datetime.utcnow()):
-        desired_temp = str(self.heating.minimum_temp)
-      else:
-        desired_temp = str(self.heating.next_event[2])
-      logger.info('Web request for /desired_temp, sending ' + desired_temp)
+      logger.info('Web request for /desired_temp, sending ' + str(self.heating.desired_temp))
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(desired_temp + '\n')
+      self.wfile.write(str(self.heating.desired_temp) + '\n')
     elif parsed_path.path == '/proportion':
       logger.info('Web request for /proportion, sending ' + str(self.heating.proportional_time))
       self.send_response(200)
