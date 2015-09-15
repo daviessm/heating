@@ -1,6 +1,6 @@
 import pygatt, struct, time, logging
 
-from pygatt.exceptions import NotConnectedError
+from pygatt.exceptions import NotConnectedError, NotificationTimeout
 
 logger = logging.getLogger('heating')
 
@@ -21,43 +21,44 @@ class SensorTag(object):
     self.tag.stop()
 
   def get_ambient_temp(self):
-    try:
-      #Turn red LED on
-      self.tag.char_write_handle(0x4e, bytearray([0x01]))
-      self.tag.char_write_handle(0x50, bytearray([0x01]))
-
-      #Turn temperature sensor on
-      self.tag.char_write_handle(0x24, bytearray([0x01]))
-
-      time.sleep(0.1)
-
-      #Turn red LED off
-      self.tag.char_write_handle(0x4e, bytearray([0x00]))
-      self.tag.char_write_handle(0x50, bytearray([0x00]))
-
-      #Wait for reading
-      tAmb = 0
-      count = 0
-      while tAmb == 0 and count < 20:
-        count += 1
-        time.sleep(0.1)
-        result = self.tag.char_read_handle(0x21)
-        (rawVobj, rawTamb) = struct.unpack('<hh', result)
-        tAmb = rawTamb / 128.0
-
-      #Turn temperature sensor off
-      self.tag.char_write_handle(0x24, bytearray([0x00]))
-
-    except NotConnectedError as nce1:
+    tAmb = 0
+    while tAmb == 0 and self.failures < 4:
       try:
-        self.connect()
-      except NotConnectedError as nce2:
-        self.failures += 1
-      raise NoTemperatureException(str(nce1) + ' unable to read temperature from ' + self.mac)
+        #Turn red LED on
+        self.tag.char_write_handle(0x4e, bytearray([0x01]))
+        self.tag.char_write_handle(0x50, bytearray([0x01]))
 
-    logger.info('Got temperature ' + str(tAmb) + ' from ' + self.mac)
+        #Turn temperature sensor on
+        self.tag.char_write_handle(0x24, bytearray([0x01]))
+
+        time.sleep(0.1)
+
+        #Turn red LED off
+        self.tag.char_write_handle(0x4e, bytearray([0x00]))
+        self.tag.char_write_handle(0x50, bytearray([0x00]))
+
+        #Wait for reading
+        count = 0
+        while tAmb == 0 and count < 8:
+          count += 1
+          time.sleep(0.1)
+          result = self.tag.char_read_handle(0x21)
+          (rawVobj, rawTamb) = struct.unpack('<hh', result)
+          tAmb = rawTamb / 128.0
+
+        #Turn temperature sensor off
+        self.tag.char_write_handle(0x24, bytearray([0x00]))
+
+      except (NotConnectedError, NotificationTimeout) as nce1:
+        try:
+          self.failures += 1
+          self.connect()
+        except (NotConnectedError, NotificationTimeout) as nce2:
+          self.failures += 1
+
     if tAmb == 0:
-      raise NoTemperatureException('Got zero temperature from ' + self.mac)
+      raise NoTemperatureException('Could not get temperature from ' + self.mac)
+    logger.info('Got temperature ' + str(tAmb) + ' from ' + self.mac)
     self.amb_temp = tAmb
     return self.amb_temp
 
