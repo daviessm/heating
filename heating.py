@@ -8,7 +8,8 @@ from httpserver import *
 from dateutil import parser
 from apiclient import discovery
 from email.mime.text import MIMEText
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.events import *
 
 import oauth2client
 from oauth2client import client
@@ -32,12 +33,10 @@ class Heating(object):
   def __init__(self):
     self.processing_lock = threading.Lock()
     self.calendar_lock = threading.Lock()
-    self.temperature_lock = threading.Lock()
     self.relay_lock = threading.Lock()
 
-    self.proportional_on_job = None
-    self.proportional_off_job = None
-    self.next_event_end_job = None
+    self.relay_trigger = None
+    self.event_trigger = None
     #Sensible defaults
     self.next_event = None
     self.desired_temp = 20
@@ -48,110 +47,105 @@ class Heating(object):
 
   def start(self):
     logger.info('Starting')
+    self.credentials = self.get_credentials()
+
+    self.sched = BlockingScheduler()
+    self.sched.add_listener(self.scheduler_listener, EVENT_JOB_ERROR)
+
     self.relay = Relay.find_relay()
-    self.time_on = None
-    self.time_off = None
     self.temp_sensors = SensorTag.find_sensortags()
 
-    self.credentials = self.get_credentials()
-    #Start getting events
-    self.sched = BackgroundScheduler()
-    self.sched.daemonic = False
+    #Get a new temperature every minute
+    for mac, sensor in self.temp_sensors.iteritems():
+      sensor.temp_job_id = self.sched.add_job(self.get_temperature, trigger = 'cron', \
+        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), args = (sensor,), second = 0)
+
+    #Get new events every 15 minutes
+    self.sched.add_job(self.get_next_event, trigger = 'cron', \
+        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), minute = '*/15')
+
+    HttpHandler.heating = self
+    server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
+    http_server_thread = threading.Thread(target=server.serve_forever)
+    http_server_thread.setDaemon(True) # don't hang on exit
+    http_server_thread.start()
+
     self.sched.start()
 
-    self.start_threads()
+  def scheduler_listener(self, event):
+    if event.exception:
+        logger.exception(event.exception)
 
   def on(self, proportion):
     self.time_on = pytz.utc.localize(datetime.datetime.utcnow())
+    self.time_off = None
     self.proportional_time = proportion
     self.relay_lock.acquire()
     self.relay.on()
     self.relay_lock.release()
-    if self.proportional_on_job:
-      self.proportional_on_job.remove()
-      self.proportional_on_job = None
-    if self.proportional_off_job:
-      self.proportional_off_job.remove()
-      self.proportional_off_job = None
-    if proportion < PROPORTIONAL_HEATING_INTERVAL and self.time_on:
-      run_date = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
-      self.proportional_off_job = self.sched.add_job(\
-        self.process, trigger='date',\
-        run_date=run_date, timezone=LOCAL_TIMEZONE,\
-        name='Proportional off at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
+    self.set_relay_trigger(proportion, 1)
 
   def off(self, proportion):
     self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
-    self.proportional_time = proportion
+    self.time_on = None
     self.relay_lock.acquire()
     self.relay.off()
     self.relay_lock.release()
-    if self.proportional_on_job:
-      self.proportional_on_job.remove()
-      self.proportional_on_job = None
-    if self.proportional_off_job:
-      self.proportional_off_job.remove()
-      self.proportional_off_job = None
-    run_date = self.time_off + datetime.timedelta(0,PROPORTIONAL_HEATING_INTERVAL - self.proportional_time * 60)
-    if proportion > 0:
-      self.proportional_on_job = self.sched.add_job(\
-        self.process, trigger='date',\
-        run_date=run_date, timezone=LOCAL_TIMEZONE,\
-        name='Proportional on at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
+    self.set_relay_trigger(proportion, 0)
 
-  def start_threads(self):
-    temperature_thread = threading.Thread(target = self.temperature_timer)
-    temperature_thread.daemon = True
-    temperature_thread.start()
+  def set_relay_trigger(self, proportion, on):
+    self.proportional_time = proportion
+    if self.relay_trigger is not None:
+      self.relay_trigger.remove()
+      self.relay_trigger = None
+    if on == 0:
+      if proportion > 0:
+        run_date = self.time_off + datetime.timedelta(0,PROPORTIONAL_HEATING_INTERVAL - self.proportional_time * 60)
+        logger.info('New proportional time: ' + str(proportion) + '/' + str(PROPORTIONAL_HEATING_INTERVAL) +\
+          ' mins - will turn on at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
+        self.relay_trigger = self.sched.add_job(\
+          self.process, trigger='date', run_date=run_date, name='Proportional on at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
+    else:
+      if proportion < PROPORTIONAL_HEATING_INTERVAL:
+        run_date = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
+        logger.info('New proportional time: ' + str(proportion) + '/' + str(PROPORTIONAL_HEATING_INTERVAL) +\
+          ' mins - will turn off at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
+        self.relay_trigger = self.sched.add_job(\
+          self.process, trigger='date', run_date=run_date, name='Proportional off at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
 
-    calendar_thread = threading.Thread(target = self.calendar_timer)
-    calendar_thread.daemon = True
-    calendar_thread.start()
 
-    #Start HTTP server
-    HttpHandler.heating = self
-    server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
-    server.serve_forever()
+  def get_temperature(self, sensor):
+    try:
+      sensor.get_ambient_temp()
+    except NoTemperatureException as e:
+      sensor.failures += 1
+      logger.warn(str(e) + 'Retrying')
+      if sensor.failures > 5 and not sensor.sent_alert:
+        logger.error('Five failures getting temperature from ' + sensor.mac)
+        #Send a warning email
+        msg = MIMEText('Unable to reach SensorTag at ' + sensor.mac)
+        msg['Subject'] = __name__
+        msg['From'] = EMAIL_FROM
+        msg['To'] = EMAIL_TO
+        smtp = smtplib.SMTP(EMAIL_SERVER)
+        smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
+        smtp.quit()
+        sensor.sent_alert = True
+    sensor.failures = 0
+    sensor.alert_sent = False
 
-  def temperature_timer(self):
-    while(True):
-      self.get_temperature()
-      self.process()
-      time.sleep(UPDATE_TEMPERATURE_INTERVAL)
+    self.update_current_temp()
 
-  def calendar_timer(self):
-    while(True):
-      self.get_next_event()
-      self.process()
-      time.sleep(UPDATE_CALENDAR_INTERVAL)
-
-  def get_temperature(self):
-    self.temperature_lock.acquire()
+  def update_current_temp(self):
     temps = []
     for mac, sensor in self.temp_sensors.iteritems():
-      try:
-        temps.append(sensor.get_ambient_temp())
-      except NoTemperatureException as e:
-        sensor.failures += 1
-        logger.warn(str(e) + 'Retrying')
-        if sensor.failures > 5 and not sensor.sent_alert:
-          logger.error('Five failures getting temperature from ' + sensor.mac)
-          #Send a warning email
-          msg = MIMEText('Unable to reach SensorTag at ' + sensor.mac)
-          msg['Subject'] = __name__
-          msg['From'] = EMAIL_FROM
-          msg['To'] = EMAIL_TO
-          smtp = smtplib.SMTP(EMAIL_SERVER)
-          smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
-          smtp.quit()
-          sensor.sent_alert = True
-      sensor.failures = 0
-      sensor.alert_sent = False
+      temps.append(sensor.amb_temp)
 
     #self.current_temp = sum(temps) / float(len(temps))
-    if len(temps) > 0: #Only update temperatures if we got something back
-      self.current_temp = temps
-    self.temperature_lock.release()
+    self.current_temp = min(temps)
+    logger.info('Overall temperature is now ' + str(self.current_temp) + ' from ' + str(temps))
+
+    self.process()
 
   def get_next_event(self):
     self.calendar_lock.acquire()
@@ -177,11 +171,11 @@ class Heating(object):
           ' to ' + str(end_date.astimezone(LOCAL_TIMEZONE)) + ': ' + str(desired_temp) + ' degrees')
         self.next_event = (start_date, end_date, desired_temp)
         #Set a schedule to get the one after this
-        if self.next_event_end_job:
-          self.next_event_end_job.remove()
-          self.next_event_end_job = None
-        self.next_event_end_job = self.sched.add_job(self.get_next_event, \
-          trigger='date', run_date=end_date, timezone=LOCAL_TIMEZONE, name='Event end at ' + str(end_date.astimezone(LOCAL_TIMEZONE)))
+        if self.event_trigger is not None:
+          self.event_trigger.remove()
+          self.event_trigger = None
+        self.event_trigger = self.sched.add_job(self.get_next_event, \
+          trigger='date', run_date=end_date, name='Event end at ' + str(end_date.astimezone(LOCAL_TIMEZONE)))
         break #Just need to get the first valid event
       except ValueError:
         logger.warn(event['summary'] + ' is not a number!')
@@ -191,7 +185,7 @@ class Heating(object):
     #Main calculations. Figure out whether the heating needs to be on or not.
     self.processing_lock.acquire()
     current_time =  pytz.utc.localize(datetime.datetime.utcnow())
-    current_temp =  min(self.current_temp) # For the purposes of calculations use the minimum
+    current_temp =  self.current_temp
     next_time =     self.next_event[0]
     next_time_end = self.next_event[1]
     next_temp =     self.next_event[2]
@@ -211,7 +205,7 @@ class Heating(object):
 
     elif not self.next_event:
       #If we don't have another event, return.
-      logger.info('No next event available.')
+      logger.warn('No next event available.')
       self.off(0)
 
     else:
@@ -240,37 +234,41 @@ class Heating(object):
             new_proportional_time = 10
           elif new_proportional_time > PROPORTIONAL_HEATING_INTERVAL:
             new_proportional_time = PROPORTIONAL_HEATING_INTERVAL
-          if new_proportional_time != self.proportional_time:
-            logger.info('New proportional time: ' + str(new_proportional_time) + ' minutes out of ' + str(PROPORTIONAL_HEATING_INTERVAL))
 
           #Are we currently on or off?
           if self.relay.status == 0: #Off
-            if self.time_off:
+            if self.time_off is None:
+              time_due_on = next_time
+              new_time_due_on = next_time
+            else:
               time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
               new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
-            else:
-              new_time_due_on = time_due_on
 
-            if time_due_on != new_time_due_on:
-              logger.info('Heating was off, due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)) +\
-                           '. Now due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)))
             if new_time_due_on < current_time:
+              logger.info('Heating is off, due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)) +'; Turning on')
               self.on(new_proportional_time)
+            else:
+              if new_proportional_time != self.proportional_time:
+                self.set_relay_trigger(new_proportional_time, self.relay.status)
+              if time_due_on != new_time_due_on:
+                logger.info('Heating was off, due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)) +\
+                             '. Now due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)))
           else: #On
+            time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
             if new_proportional_time < PROPORTIONAL_HEATING_INTERVAL:
               #Must have a time_on at this point
-              time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
               new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
-              if new_time_due_off < current_time:
-                logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +'. Turning off')
-                self.off(new_proportional_time)
-              else:
-                if new_time_due_off != time_due_off:
-                  logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +\
-                               '. Now due off at ' + str(new_time_due_off.astimezone(LOCAL_TIMEZONE)))
-                self.proportional_time = new_proportional_time
             else:
-              logger.info('Heating is on for maximum interval. Leaving on.')
+              new_time_due_off = next_time_end
+            if new_time_due_off < current_time:
+              logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +'; Turning off')
+              self.off(new_proportional_time)
+            else:
+              if new_proportional_time != self.proportional_time:
+                self.set_relay_trigger(new_proportional_time, self.relay.status)
+              if new_time_due_off != time_due_off:
+                logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +\
+                             '. Now due off at ' + str(new_time_due_off.astimezone(LOCAL_TIMEZONE)))
       else:
         #Not due on
         logger.info('Not due on until ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)))
@@ -305,6 +303,7 @@ class Heating(object):
     return credentials
 
 def main():
+  logger = logging.getLogger('heating')
   heating = Heating()
   try:
     heating.start()

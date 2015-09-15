@@ -11,6 +11,7 @@ class SensorTag(object):
     self.failures = 0
     self.sent_alert = False
     self.amb_temp = 30
+    self.temp_job_id = None
     self.connect()
 
   def connect(self):
@@ -60,7 +61,6 @@ class SensorTag(object):
       raise NoTemperatureException('Could not get temperature from ' + self.mac)
     logger.info('Got temperature ' + str(tAmb) + ' from ' + self.mac)
     self.amb_temp = tAmb
-    return self.amb_temp
 
   @staticmethod
   def find_sensortags():
