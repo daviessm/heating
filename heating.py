@@ -154,9 +154,13 @@ class Heating(object):
 
     now = datetime.datetime.utcnow().isoformat() + 'Z'
     logger.debug('Getting the next event')
-    eventsResult = service.events().list(
+    try:
+      eventsResult = service.events().list(
         calendarId=CALENDAR_ID, timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
-    events = eventsResult.get('items', [])
+      events = eventsResult.get('items', [])
+    except Exception as e:
+      logger.exception(e)
+      return
 
     if not events:
       logger.info('No upcoming events found.')
@@ -206,6 +210,11 @@ class Heating(object):
     elif not self.next_event:
       #If we don't have another event, return.
       logger.warn('No next event available.')
+      self.off(0)
+
+    elif next_time_end < current_time:
+      #If the last event ended in the past, off.
+      logger.warn('Event end time is in the past.')
       self.off(0)
 
     else:
