@@ -1,5 +1,5 @@
 #!/usr/bin/python
-import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib
+import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uuid
 import logging, logging.config, logging.handlers
 from sensortag import SensorTag, NoTemperatureException
 from relay import Relay
@@ -7,6 +7,7 @@ from httpserver import *
 
 from dateutil import parser
 from apiclient import discovery
+from apiclient.errors import HttpError
 from email.mime.text import MIMEText
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.events import *
@@ -15,7 +16,7 @@ import oauth2client
 from oauth2client import client
 from oauth2client import tools
 
-UPDATE_CALENDAR_INTERVAL=900 #seconds
+UPDATE_CALENDAR_INTERVAL=60 #minutes
 UPDATE_TEMPERATURE_INTERVAL=60 #seconds
 PROPORTIONAL_HEATING_INTERVAL=30 # minutes
 MINIMUM_TEMP=9
@@ -62,7 +63,7 @@ class Heating(object):
 
     #Get new events every 15 minutes
     self.sched.add_job(self.get_next_event, trigger = 'cron', \
-        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), minute = '*/15')
+        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), minute = '*/' + str(UPDATE_CALENDAR_INTERVAL))
 
     HttpHandler.heating = self
     server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
@@ -74,7 +75,8 @@ class Heating(object):
 
   def scheduler_listener(self, event):
     if event.exception:
-        logger.exception(event.exception)
+      logger.exception(event.exception)
+      sys.exit(1)
 
   def on(self, proportion):
     self.time_on = pytz.utc.localize(datetime.datetime.utcnow())
@@ -158,9 +160,19 @@ class Heating(object):
       eventsResult = service.events().list(
         calendarId=CALENDAR_ID, timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
       events = eventsResult.get('items', [])
+      id = str(uuid.uuid4())
+      service.events().watch(calendarId=CALENDAR_ID, \
+        body={'id':id, 'type':'web_hook', 'address':'https://www.steev.me.uk/notifications', 'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60))*1000})\
+        .execute()
+    except HttpError as e:
+      logger.error('HttpError, resp = ' + str(e.resp) + '; content = ' + str(e.content))
+      logger.exception(e)
+      return
     except Exception as e:
       logger.exception(e)
       return
+
+    new_event = False
 
     if not events:
       logger.info('No upcoming events found.')
@@ -169,6 +181,7 @@ class Heating(object):
       start_date = parser.parse(start)
       end = event['end'].get('dateTime', event['end'].get('date'))
       end_date = parser.parse(end)
+
       try:
         desired_temp = float(event['summary'])
         logger.info('Next event is ' + str(start_date.astimezone(LOCAL_TIMEZONE)) + \
@@ -180,22 +193,30 @@ class Heating(object):
           self.event_trigger = None
         self.event_trigger = self.sched.add_job(self.get_next_event, \
           trigger='date', run_date=end_date, name='Event end at ' + str(end_date.astimezone(LOCAL_TIMEZONE)))
+
+        if start_date != self.next_event[0] or end_date != self.next_event[1] or desired_temp != self.next_event[2]:
+          new_event = True
+
         break #Just need to get the first valid event
       except ValueError:
         logger.warn(event['summary'] + ' is not a number!')
     self.calendar_lock.release()
 
-  def process(self):
+    self.process(new_event=new_event)
+
+  def process(self, new_event=False):
     #Main calculations. Figure out whether the heating needs to be on or not.
     self.processing_lock.acquire()
+
     current_time =  pytz.utc.localize(datetime.datetime.utcnow())
     current_temp =  self.current_temp
-    next_time =     self.next_event[0]
-    next_time_end = self.next_event[1]
-    next_temp =     self.next_event[2]
-    temp_diff =     next_temp - current_temp
+    if self.next_event is not None:
+      next_time =     self.next_event[0]
+      next_time_end = self.next_event[1]
+      next_temp =     self.next_event[2]
+      temp_diff =     next_temp - current_temp
 
-    if (not self.next_event) or \
+    if self.next_event is None or \
         (self.next_event[0] > pytz.utc.localize(datetime.datetime.utcnow()) and \
          self.next_event[1] > pytz.utc.localize(datetime.datetime.utcnow())):
       self.desired_temp = str(MINIMUM_TEMP)
@@ -246,7 +267,7 @@ class Heating(object):
 
           #Are we currently on or off?
           if self.relay.status == 0: #Off
-            if self.time_off is None:
+            if self.time_off is None or next_event:
               time_due_on = next_time
               new_time_due_on = next_time
             else:
