@@ -102,7 +102,7 @@ class Heating(object):
       self.relay_trigger = None
     if on == 0:
       if proportion > 0:
-        run_date = self.time_off + datetime.timedelta(0,PROPORTIONAL_HEATING_INTERVAL - self.proportional_time * 60)
+        run_date = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL - self.proportional_time) * 60)
         logger.info('New proportional time: ' + str(proportion) + '/' + str(PROPORTIONAL_HEATING_INTERVAL) +\
           ' mins - will turn on at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
         self.relay_trigger = self.sched.add_job(\
