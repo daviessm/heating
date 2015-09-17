@@ -41,7 +41,7 @@ class Heating(object):
     #Sensible defaults
     self.next_event = None
     self.desired_temp = 20
-    self.current_temp = [30]
+    self.current_temp = 30
     self.proportional_time = 0
     self.time_on = None
     self.time_off = None
