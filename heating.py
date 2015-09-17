@@ -40,8 +40,8 @@ class Heating(object):
     self.event_trigger = None
     #Sensible defaults
     self.next_event = None
-    self.desired_temp = 20
-    self.current_temp = 30
+    self.desired_temp = None
+    self.current_temp = None
     self.proportional_time = 0
     self.time_on = None
     self.time_off = None
@@ -140,8 +140,12 @@ class Heating(object):
   def update_current_temp(self):
     temps = []
     for mac, sensor in self.temp_sensors.iteritems():
-      temps.append(sensor.amb_temp)
+      if sensor.amb_temp is not None:
+        temps.append(sensor.amb_temp)
 
+    if not temps:
+      logger.info('No temperatures.')
+      return
     #self.current_temp = sum(temps) / float(len(temps))
     self.current_temp = min(temps)
     logger.info('Overall temperature is now ' + str(self.current_temp) + ' from ' + str(temps))
@@ -205,6 +209,10 @@ class Heating(object):
 
   def process(self):
     #Main calculations. Figure out whether the heating needs to be on or not.
+
+    if self.current_temp is None:
+      return
+
     self.processing_lock.acquire()
 
     current_time =  pytz.utc.localize(datetime.datetime.utcnow())
