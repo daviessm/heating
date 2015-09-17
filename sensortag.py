@@ -1,4 +1,5 @@
-import pygatt, struct, time, logging
+import pygatt, pygatt.backends
+import struct, time, logging
 
 from pygatt.exceptions import NotConnectedError, NotificationTimeout
 
@@ -12,10 +13,11 @@ class SensorTag(object):
     self.sent_alert = False
     self.amb_temp = 30
     self.temp_job_id = None
+    self.tag = pygatt.BluetoothLEDevice(self.mac, self.dongle)
     self.connect()
 
   def connect(self):
-    self.tag = pygatt.BluetoothLEDevice(self.mac, self.dongle)
+    self.tag.run()
     self.tag.connect()
 
   def disconnect(self):
@@ -52,12 +54,12 @@ class SensorTag(object):
 
       except (NotConnectedError, NotificationTimeout) as nce1:
         try:
-          logger.error('nce1: ' + str(nce1))
-          self.failures += 1
+          logger.info('nce1: ' + str(nce1))
           self.disconnect()
           self.connect()
+          self.failures += 1
         except (NotConnectedError, NotificationTimeout) as nce2:
-          logger.error('nce2: ' + str(nce2))
+          logger.info('nce2: ' + str(nce2))
           self.failures += 1
 
     if tAmb == 0:
@@ -76,8 +78,8 @@ class SensorTag(object):
         logger.info('Found SensorTag with address: ' + device['address'])
         sensortags[device['address']] = SensorTag(pygatt.backends.GATTToolBackend(), device['address'])
     if len(sensortags) == 0:
+      logger.critical('No SensorTags found!')
       raise Exception('No SensorTags found!')
-    dongle.stop()
     return sensortags
 
 class NoTemperatureException(Exception):
