@@ -194,6 +194,7 @@ class Heating(object):
 
         #Tell the processing that this is a new event so it resets the proportion to start again
         if self.next_event is None or start_date != self.next_event[0] or end_date != self.next_event[1] or desired_temp != self.next_event[2]:
+          logger.info('New event starting, resetting time off.')
           self.time_off = None
 
         break #Just need to get the first valid event
@@ -272,11 +273,12 @@ class Heating(object):
               time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
               new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
 
-            if new_time_due_on < current_time:
+            if new_time_due_on <= current_time:
               logger.info('Heating is off, due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)) +'; Turning on')
               self.on(new_proportional_time)
             else:
               if new_proportional_time != self.proportional_time:
+                logger.info('Changing time next due on.')
                 self.set_relay_trigger(new_proportional_time, self.relay.status)
               if time_due_on != new_time_due_on:
                 logger.info('Heating was off, due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)) +\
@@ -288,11 +290,13 @@ class Heating(object):
               new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
             else:
               new_time_due_off = next_time_end
+
             if new_time_due_off < current_time:
               logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +'; Turning off')
               self.off(new_proportional_time)
             else:
               if new_proportional_time != self.proportional_time:
+                logger.info('Changing time next due off.')
                 self.set_relay_trigger(new_proportional_time, self.relay.status)
               if new_time_due_off != time_due_off:
                 logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +\
