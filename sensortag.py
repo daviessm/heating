@@ -52,9 +52,12 @@ class SensorTag(object):
 
       except (NotConnectedError, NotificationTimeout) as nce1:
         try:
+          logger.error('nce1: ' + str(nce1))
           self.failures += 1
+          self.disconnect()
           self.connect()
         except (NotConnectedError, NotificationTimeout) as nce2:
+          logger.error('nce2: ' + str(nce2))
           self.failures += 1
 
     if tAmb == 0:

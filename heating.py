@@ -120,8 +120,7 @@ class Heating(object):
     try:
       sensor.get_ambient_temp()
     except NoTemperatureException as e:
-      sensor.failures += 1
-      logger.warn(str(e) + 'Retrying')
+      logger.warn(str(e) + ' - Retrying')
       if sensor.failures > 5 and not sensor.sent_alert:
         logger.error('Five failures getting temperature from ' + sensor.mac)
         #Send a warning email
