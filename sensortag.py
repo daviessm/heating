@@ -11,7 +11,7 @@ class SensorTag(object):
     self.dongle = dongle
     self.failures = 0
     self.sent_alert = False
-    self.amb_temp = 30
+    self.amb_temp = None
     self.temp_job_id = None
     self.tag = pygatt.BluetoothLEDevice(self.mac, self.dongle)
     self.connect()
@@ -54,12 +54,12 @@ class SensorTag(object):
 
       except (NotConnectedError, NotificationTimeout) as nce1:
         try:
-          logger.info('nce1: ' + str(nce1))
+          logger.debug('nce1: ' + str(nce1))
           self.disconnect()
           self.connect()
           self.failures += 1
         except (NotConnectedError, NotificationTimeout) as nce2:
-          logger.info('nce2: ' + str(nce2))
+          logger.debug('nce2: ' + str(nce2))
           self.failures += 1
 
     if tAmb == 0:
@@ -71,7 +71,7 @@ class SensorTag(object):
   def find_sensortags():
     dongle = pygatt.backends.GATTToolBackend()
     logger.debug('Scanning for SensorTags')
-    devices = dongle.scan()
+    devices = dongle.scan(timeout=5)
     sensortags = {}
     for device in devices:
       if device['name'] == 'CC2650':
