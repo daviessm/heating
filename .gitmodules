@@ -1,3 +1,0 @@
-[submodule "pygatt"]
-	path = pygatt-git
-	url = https://github.com/stratosinc/pygatt.git
