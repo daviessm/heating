@@ -1,0 +1,3 @@
+[submodule "pygatt-git"]
+	path = pygatt-git
+	url = git@github.com:daviessm/pygatt.git
