@@ -2,6 +2,7 @@ import pygatt, pygatt.backends
 import struct, time, logging
 
 from pygatt.exceptions import NotConnectedError, NotificationTimeout
+from pygatt.backends.dbusbackend.dbusbackend import DBusBluetoothLEDevice
 
 logger = logging.getLogger('heating')
 
@@ -13,44 +14,43 @@ class SensorTag(object):
     self.sent_alert = False
     self.amb_temp = None
     self.temp_job_id = None
-    self.tag = pygatt.BluetoothLEDevice(self.mac, self.dongle)
+    self.tag = DBusBluetoothLEDevice(self.mac, self.dongle)
     self.connect()
 
   def connect(self):
-    self.tag.run()
     self.tag.connect()
 
   def disconnect(self):
-    self.tag.stop()
+    self.tag.disconnect()
 
   def get_ambient_temp(self):
     tAmb = 0
     while tAmb == 0 and self.failures < 4:
       try:
         #Turn red LED on
-        self.tag.char_write_handle(0x4e, bytearray([0x01]))
-        self.tag.char_write_handle(0x50, bytearray([0x01]))
+        self.tag.char_write('f000aa65-0451-4000-b000-000000000000', bytearray([0x01]))
+        self.tag.char_write('f000aa66-0451-4000-b000-000000000000', bytearray([0x01]))
 
         #Turn temperature sensor on
-        self.tag.char_write_handle(0x24, bytearray([0x01]))
+        self.tag.char_write('f000aa02-0451-4000-b000-000000000000', bytearray([0x01]))
 
         time.sleep(0.1)
 
         #Turn red LED off
-        self.tag.char_write_handle(0x4e, bytearray([0x00]))
-        self.tag.char_write_handle(0x50, bytearray([0x00]))
+        self.tag.char_write('f000aa65-0451-4000-b000-000000000000', bytearray([0x00]))
+        self.tag.char_write('f000aa66-0451-4000-b000-000000000000', bytearray([0x00]))
 
         #Wait for reading
         count = 0
         while tAmb == 0 and count < 8:
           count += 1
           time.sleep(0.1)
-          result = self.tag.char_read_handle(0x21)
+          result = self.tag.char_read('f000aa01-0451-4000-b000-000000000000')
           (rawVobj, rawTamb) = struct.unpack('<hh', result)
           tAmb = rawTamb / 128.0
 
         #Turn temperature sensor off
-        self.tag.char_write_handle(0x24, bytearray([0x00]))
+        self.tag.char_write('f000aa02-0451-4000-b000-000000000000', bytearray([0x00]))
 
       except (NotConnectedError, NotificationTimeout) as nce1:
         try:
@@ -69,16 +69,17 @@ class SensorTag(object):
 
   @staticmethod
   def find_sensortags():
-    dongle = pygatt.backends.GATTToolBackend()
+    dongle = pygatt.backends.DBusBackend()
     logger.debug('Scanning for SensorTags')
-    devices = dongle.scan(timeout=5)
+    devices = dongle.scan(timeout=10)
     sensortags = {}
     for device in devices:
-      if device['name'] == 'CC2650':
+      if 'SensorTag' in device['name']:
         logger.info('Found SensorTag with address: ' + device['address'])
-        sensortags[device['address']] = SensorTag(pygatt.backends.GATTToolBackend(), device['address'])
+        sensortags[device['address']] = SensorTag(dongle, device['address'])
     if len(sensortags) == 0:
-      logger.critical('No SensorTags found!')
+      dongle.stop()
+      logger.exception('No SensorTags found!')
       raise Exception('No SensorTags found!')
     return sensortags
 
