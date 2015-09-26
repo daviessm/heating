@@ -58,9 +58,16 @@ class SensorTag(object):
           self.disconnect()
           self.connect()
           self.failures += 1
+          time.sleep(1)
         except (NotConnectedError, NotificationTimeout) as nce2:
           logger.debug('nce2: ' + str(nce2))
           self.failures += 1
+          time.sleep(1)
+      except DBusException as dbe:
+        logger.debug('dbe: ' + str(dbe))
+        self.failures += 1
+        time.sleep(1)
+      
 
     if tAmb == 0:
       raise NoTemperatureException('Could not get temperature from ' + self.mac)
@@ -69,7 +76,7 @@ class SensorTag(object):
 
   @staticmethod
   def find_sensortags():
-    dongle = pygatt.backends.DBusBackend()
+    dongle = pygatt.backends.DBusBackend(connect_timeout=17)
     logger.debug('Scanning for SensorTags')
     devices = dongle.scan(timeout=10)
     sensortags = {}
