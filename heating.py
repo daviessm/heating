@@ -346,8 +346,14 @@ def main():
   heating = Heating()
   try:
     heating.start()
+  except KeyboardInterrupt as e:
+    for mac, sensor in heating.temp_sensors.iteritems():
+      sensor.tag._backend.stop()
+    sys.exit(0)
   except Exception as e:
     logger.exception('Exception in main thread. Exiting.')
+    for mac, sensor in heating.temp_sensors.iteritems():
+      sensor.tag._backend.stop()
     heating.relay.off()
     sys.exit(1)
 
