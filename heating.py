@@ -164,9 +164,13 @@ class Heating(object):
         calendarId=CALENDAR_ID, timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
       events = eventsResult.get('items', [])
       id = str(uuid.uuid4())
-      service.events().watch(calendarId=CALENDAR_ID, \
-        body={'id':id, 'type':'web_hook', 'address':'https://www.steev.me.uk/notifications', 'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60))*1000})\
+      hook_response = service.events().watch(calendarId=CALENDAR_ID, \
+        body={'id':id, \
+              'type':'web_hook', \
+              'address':'https://www.steev.me.uk/notifications', \
+              'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60))*1000})\
         .execute()
+      logger.debug('Got response' + str(hook_response) + ' from web_hook call')
     except HttpError as e:
       logger.error('HttpError, resp = ' + str(e.resp) + '; content = ' + str(e.content))
       logger.exception(e)
