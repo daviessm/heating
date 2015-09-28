@@ -10,15 +10,22 @@ class HttpHandler(BaseHTTPRequestHandler):
 
   def do_GET(self):
     parsed_path = urlparse.urlparse(self.path)
-    if '/current_temp' in parsed_path.path:
+    if '/current_temp/' in parsed_path.path:
       address = parsed_path.path[parsed_path.path.rfind('/') + 1:]
       if address in self.heating.temp_sensors:
         response = str(self.heating.temp_sensors[address].amb_temp) + '\n'
+        logger.info('Web request for ' + parsed_path.path + ', sending ' + response)
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(response)
       else:
-        response = ''
-        for mac, sensor in self.heating.temp_sensors.iteritems():
-          response += mac + '=' + str(self.heating.temp_sensors[mac].amb_temp) + '\n'
-      logger.info('Web request for ' + parsed_path.path + ', sending ' + response.replace('\n','\\n '))
+        logger.info('Web request for ' + parsed_path.path + ', sending 404')
+        self.send_error(404)
+    elif '/current_temp' in parsed_path.path:
+      response = ''
+      for mac, sensor in self.heating.temp_sensors.iteritems():
+        response += mac + '=' + str(self.heating.temp_sensors[mac].amb_temp) + '\n'
+      logger.info('Web request for /current_temp, sending ' + response)
       self.send_response(200)
       self.end_headers()
       self.wfile.write(response)
@@ -32,6 +39,11 @@ class HttpHandler(BaseHTTPRequestHandler):
       self.send_response(200)
       self.end_headers()
       self.wfile.write(str(self.heating.proportional_time) + '\n')
+    elif parsed_path.path == '/heating_status':
+      logger.info('Web request for /heating_status, sending ' + str(self.heating.relay.status))
+      self.send_response(200)
+      self.end_headers()
+      self.wfile.write(str(self.heating.relay.status) + '\n')
     elif parsed_path.path == '/refresh/events':
       logger.info('Web request for /refresh/events, sending ' + str(self.heating.next_event))
       self.heating.get_next_event()
