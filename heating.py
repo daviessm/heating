@@ -39,7 +39,7 @@ class Heating(object):
     self.relay_trigger = None
     self.event_trigger = None
     #Sensible defaults
-    self.next_event = None
+    self.events = None
     self.desired_temp = None
     self.current_temp = None
     self.proportional_time = 0
@@ -161,7 +161,7 @@ class Heating(object):
     logger.debug('Getting the next event')
     try:
       eventsResult = service.events().list(
-        calendarId=CALENDAR_ID, timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
+        calendarId=CALENDAR_ID, timeMin=now, maxResults=3, singleEvents=True, orderBy='startTime').execute()
       events = eventsResult.get('items', [])
       id = str(uuid.uuid4())
       hook_response = service.events().watch(calendarId=CALENDAR_ID, \
@@ -179,9 +179,13 @@ class Heating(object):
       logger.exception(e)
       return
 
+    parsed_events = []
     if not events:
       logger.info('No upcoming events found.')
+
+    counter = 0
     for event in events:
+      counter += 1
       start = event['start'].get('dateTime', event['start'].get('date'))
       start_date = parser.parse(start)
       end = event['end'].get('dateTime', event['end'].get('date'))
@@ -189,45 +193,48 @@ class Heating(object):
 
       try:
         desired_temp = float(event['summary'])
-        logger.info('Next event is ' + str(start_date.astimezone(LOCAL_TIMEZONE)) + \
+        logger.info('Event ' + str(counter) + ' is ' + str(start_date.astimezone(LOCAL_TIMEZONE)) + \
           ' to ' + str(end_date.astimezone(LOCAL_TIMEZONE)) + ': ' + str(desired_temp) + ' degrees')
-        self.next_event = (start_date, end_date, desired_temp)
-        #Set a schedule to get the one after this
-        if self.event_trigger is not None:
-          self.event_trigger.remove()
-          self.event_trigger = None
-        self.event_trigger = self.sched.add_job(self.get_next_event, \
-          trigger='date', run_date=end_date, name='Event end at ' + str(end_date.astimezone(LOCAL_TIMEZONE)))
+        parsed_events.append({'start_date': start_date, 'end_date': end_date, 'desired_temp': desired_temp})
+        if counter == 1:
+          #Set a schedule to get the one after this
+          if self.event_trigger is not None:
+            self.event_trigger.remove()
+            self.event_trigger = None
 
-        #Tell the processing that this is a new event so it resets the proportion to start again
-        if self.next_event is None or start_date != self.next_event[0] or end_date != self.next_event[1] or desired_temp != self.next_event[2]:
-          logger.info('New event starting, resetting time off.')
-          self.time_off = None
+          self.event_trigger = self.sched.add_job(self.get_next_event, \
+            trigger='date', run_date=end_date, name='Event end at ' + str(end_date.astimezone(LOCAL_TIMEZONE)))
 
-        break #Just need to get the first valid event
+          #Tell the processing that this is a new event so it resets the proportion to start again
+          if self.events is None or start_date != self.events[0]['start_date'] or end_date != self.events[0]['end_date'] or desired_temp != self.events[0]['desired_temp']:
+            logger.info('New event starting, resetting time off.')
+            self.time_off = None
+
       except ValueError:
         logger.warn(event['summary'] + ' is not a number!')
+    self.events = parsed_events
     self.calendar_lock.release()
 
     self.process()
 
   def process(self):
     #Main calculations. Figure out whether the heating needs to be on or not.
-
     if self.current_temp is None:
       return
 
     self.processing_lock.acquire()
 
-    current_time =  pytz.utc.localize(datetime.datetime.utcnow())
-    current_temp =  self.current_temp
-    if self.next_event is not None:
-      next_time =     self.next_event[0]
-      next_time_end = self.next_event[1]
-      next_temp =     self.next_event[2]
+    current_time = pytz.utc.localize(datetime.datetime.utcnow())
+    current_temp = self.current_temp
+    time_due_on  = None
+
+    if self.events is not None:
+      next_time =     self.events[0]['start_date']
+      next_time_end = self.events[0]['end_date']
+      next_temp =     self.events[0]['desired_temp']
       temp_diff =     next_temp - current_temp
 
-    if self.next_event is None or \
+    if self.events is None or \
         (next_time     > pytz.utc.localize(datetime.datetime.utcnow()) and \
          next_time_end > pytz.utc.localize(datetime.datetime.utcnow())):
       self.desired_temp = str(MINIMUM_TEMP)
@@ -239,7 +246,7 @@ class Heating(object):
       logger.info('Temperature is below minimum, turning on')
       self.on(PROPORTIONAL_HEATING_INTERVAL)
 
-    elif self.next_event is None:
+    elif self.events is None:
       #If we don't have an event yet, warn but do nothing.
       logger.warn('No next event available.')
 
@@ -254,20 +261,30 @@ class Heating(object):
         time_due_on = next_time
         logger.info('Currently in an event starting at ' + str(next_time.astimezone(LOCAL_TIMEZONE)) + \
           ' ending at ' + str(next_time_end.astimezone(LOCAL_TIMEZONE)) + ' temp diff is ' + str(temp_diff))
-      else:
-        #Start 45 minutes earlier for each degree the heating is below the desired temp, plus half an hour.
-        time_due_on = next_time - datetime.timedelta(0,(temp_diff * 45 * 60) + (30 * 60))
-        if time_due_on > next_time:
-          time_due_on = next_time
-        elif temp_diff > 0.5:
-          new_proportional_time = 30
 
+      #Check all events for warm-up temperature
+      for event in self.events:
+        event_next_time = event['start_date']
+        if event_next_time > current_time:
+          event_desired_temp = event['desired_temp']
+          event_temp_diff = event_desired_temp - current_temp
+          if event_temp_diff > 0:
+            #Start 45 minutes earlier for each degree the heating is below the desired temp, plus half an hour.
+            event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * 45 * 60) + (30 * 60))
+            if time_due_on is None or event_time_due_on < time_due_on:
+              time_due_on = event_time_due_on
+              next_temp = event_desired_temp
+              if event_temp_diff > 0.5:
+                new_proportional_time = 30
+          if time_due_on is None or event_next_time < time_due_on:
+            time_due_on = event_next_time
+
+      if time_due_on < next_time:
         logger.info('Before an event starting at ' + str(next_time.astimezone(LOCAL_TIMEZONE)) +\
           ' temp diff is ' + str(temp_diff) + ' now due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)))
 
       if time_due_on <= current_time:
         if temp_diff < 0:
-          #Is the current temperature higher than the next desired temperature?
           logger.info('Current temperature ' + str(current_temp) + ' is higher than the desired temperature ' + str(next_temp))
           self.off(0)
         else:
