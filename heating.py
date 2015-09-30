@@ -121,11 +121,11 @@ class Heating(object):
       sensor.get_ambient_temp()
     except NoTemperatureException as e:
       logger.warn(str(e) + ' - Retrying')
-      if sensor.failures > 5 and not sensor.sent_alert:
+      if sensor.failures >= 5 and not sensor.sent_alert:
         logger.error('Five failures getting temperature from ' + sensor.mac)
         #Send a warning email
         msg = MIMEText('Unable to reach SensorTag at ' + sensor.mac)
-        msg['Subject'] = __name__
+        msg['Subject'] = 'Heating: Failure getting temperature reading'
         msg['From'] = EMAIL_FROM
         msg['To'] = EMAIL_TO
         smtp = smtplib.SMTP(EMAIL_SERVER)
@@ -249,15 +249,18 @@ class Heating(object):
       self.off(0)
 
     else:
+      new_proportional_time = None
       if next_time < current_time:
         time_due_on = next_time
         logger.info('Currently in an event starting at ' + str(next_time.astimezone(LOCAL_TIMEZONE)) + \
           ' ending at ' + str(next_time_end.astimezone(LOCAL_TIMEZONE)) + ' temp diff is ' + str(temp_diff))
       else:
         #Start 45 minutes earlier for each degree the heating is below the desired temp, plus half an hour.
-        time_due_on = next_time - datetime.timedelta(0,(temp_diff * 30 * 60) + (30 * 60))
+        time_due_on = next_time - datetime.timedelta(0,(temp_diff * 45 * 60) + (30 * 60))
         if time_due_on > next_time:
           time_due_on = next_time
+        elif temp_diff > 0.5:
+          new_proportional_time = 30
 
         logger.info('Before an event starting at ' + str(next_time.astimezone(LOCAL_TIMEZONE)) +\
           ' temp diff is ' + str(temp_diff) + ' now due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)))
@@ -268,8 +271,10 @@ class Heating(object):
           logger.info('Current temperature ' + str(current_temp) + ' is higher than the desired temperature ' + str(next_temp))
           self.off(0)
         else:
-          #Calculate the proportional amount of time the heating needs to be on to reach the desired temperature
-          new_proportional_time = temp_diff * PROPORTIONAL_HEATING_INTERVAL / 2
+          if new_proportional_time is None:
+            #Calculate the proportional amount of time the heating needs to be on to reach the desired temperature
+            new_proportional_time = temp_diff * PROPORTIONAL_HEATING_INTERVAL / 2
+
           if new_proportional_time < 10: #Minimum time boiler can be on to be worthwhile
             new_proportional_time = 10
           elif new_proportional_time > PROPORTIONAL_HEATING_INTERVAL:
