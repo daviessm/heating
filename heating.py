@@ -50,6 +50,12 @@ class Heating(object):
     logger.info('Starting')
     self.credentials = self.get_credentials()
 
+    HttpHandler.heating = self
+    server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
+    http_server_thread = threading.Thread(target=server.serve_forever)
+    http_server_thread.setDaemon(True) # don't hang on exit
+    http_server_thread.start()
+
     self.sched = BlockingScheduler()
     self.sched.add_listener(self.scheduler_listener, EVENT_JOB_ERROR)
 
@@ -61,22 +67,16 @@ class Heating(object):
       sensor.temp_job_id = self.sched.add_job(self.get_temperature, trigger = 'cron', \
         next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), args = (sensor,), second = 0)
 
-    #Get new events every 15 minutes
+    #Get new events every X minutes
     self.sched.add_job(self.get_next_event, trigger = 'cron', \
         next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), minute = '*/' + str(UPDATE_CALENDAR_INTERVAL))
-
-    HttpHandler.heating = self
-    server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
-    http_server_thread = threading.Thread(target=server.serve_forever)
-    http_server_thread.setDaemon(True) # don't hang on exit
-    http_server_thread.start()
 
     self.sched.start()
 
   def scheduler_listener(self, event):
-    if event.exception:
-      logger.exception(event.exception)
-      sys.exit(1)
+    if event.exception is not None:
+      logger.error(str(event))
+      raise Exception('Error in a thread somewhere')
 
   def on(self, proportion):
     self.time_on = pytz.utc.localize(datetime.datetime.utcnow())
@@ -102,6 +102,8 @@ class Heating(object):
       self.relay_trigger = None
     if on == 0:
       if proportion > 0:
+        if self.time_off is None:
+          self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
         run_date = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL - self.proportional_time) * 60)
         logger.info('New proportional time: ' + str(proportion) + '/' + str(PROPORTIONAL_HEATING_INTERVAL) +\
           ' mins - will turn on at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
@@ -164,19 +166,27 @@ class Heating(object):
         calendarId=CALENDAR_ID, timeMin=now, maxResults=3, singleEvents=True, orderBy='startTime').execute()
       events = eventsResult.get('items', [])
       id = str(uuid.uuid4())
+      logger.debug('Sending request: ' + str({'id':id, \
+              'type':'web_hook', \
+              'address':'https://www.steev.me.uk/heating/events', \
+              'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60))*1000 \
+             }))
       hook_response = service.events().watch(calendarId=CALENDAR_ID, \
         body={'id':id, \
               'type':'web_hook', \
-              'address':'https://www.steev.me.uk/notifications', \
-              'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60))*1000})\
+              'address':'https://www.steev.me.uk/heating/events', \
+              'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60))*1000 \
+             })\
         .execute()
       logger.debug('Got response' + str(hook_response) + ' from web_hook call')
     except HttpError as e:
       logger.error('HttpError, resp = ' + str(e.resp) + '; content = ' + str(e.content))
       logger.exception(e)
+      self.calendar_lock.release()
       return
     except Exception as e:
       logger.exception(e)
+      self.calendar_lock.release()
       return
 
     parsed_events = []
@@ -268,15 +278,24 @@ class Heating(object):
         if event_next_time > current_time:
           event_desired_temp = event['desired_temp']
           event_temp_diff = event_desired_temp - current_temp
+          logger.debug('Future event starting at ' + str(event_next_time.astimezone(LOCAL_TIMEZONE)) + \
+            ' temp difference is ' + str(event_temp_diff))
           if event_temp_diff > 0:
-            #Start 45 minutes earlier for each degree the heating is below the desired temp, plus half an hour.
-            event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * 45 * 60) + (30 * 60))
-            if time_due_on is None or event_time_due_on < time_due_on:
+            #Start 25 minutes earlier for each degree the heating is below the desired temp, plus 20 minutes.
+            event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * 25 * 60) + (20 * 60))
+            logger.debug('Future event needs warm up, due on at ' + str(event_time_due_on.astimezone(LOCAL_TIMEZONE)))
+            if time_due_on is None or event_time_due_on < time_due_on or event_time_due_on < current_time:
               time_due_on = event_time_due_on
               next_temp = event_desired_temp
-              if event_temp_diff > 0.5:
+              temp_diff = event_temp_diff
+              logger.debug('Future event starting at ' + str(event_next_time.astimezone(LOCAL_TIMEZONE)) + \
+                ' warm-up, now due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)))
+              #Full blast until 0.3 degrees difference
+              if event_temp_diff > 0.3:
                 new_proportional_time = 30
-          if time_due_on is None or event_next_time < time_due_on:
+            elif time_due_on is None or event_next_time < time_due_on:
+              time_due_on = event_next_time
+          elif time_due_on is None or event_next_time < time_due_on:
             time_due_on = event_next_time
 
       if time_due_on < next_time:
@@ -302,9 +321,14 @@ class Heating(object):
             if self.time_off is None:
               time_due_on = next_time
               new_time_due_on = next_time
-            else:
+            elif new_proportional_time <= self.proportional_time:
+              #Need to be on for less time - turn on in a bit
               time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
               new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
+            else:
+              #Need to be on for more time - turn on now
+              time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
+              new_time_due_on = current_time
 
             if new_time_due_on <= current_time:
               logger.info('Heating is off, due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)) +'; Turning on')
@@ -379,7 +403,10 @@ def main():
   except Exception as e:
     logger.exception('Exception in main thread. Exiting.')
     for mac, sensor in heating.temp_sensors.iteritems():
-      sensor.tag._backend.stop()
+      try:
+        sensor.tag._backend.stop()
+      except Exception as e1:
+        pass
     heating.relay.off()
     sys.exit(1)
 
