@@ -44,16 +44,24 @@ class HttpHandler(BaseHTTPRequestHandler):
       self.send_response(200)
       self.end_headers()
       self.wfile.write(str(self.heating.relay.status) + '\n')
-    elif parsed_path.path == '/refresh/events':
-      logger.info('Web request for /refresh/events, sending ' + str(self.heating.next_event))
-      self.heating.get_next_event()
-      self.send_response(200)
-      self.end_headers()
-      self.wfile.write(str(self.heating.next_event) + '\n')
     else:
       logger.info('Web request for ' + parsed_path.path + ', ignoring')
       self.send_error(404)
     return
+
+  def do_POST(self):
+    parsed_path = urlparse.urlparse(self.path)
+    if parsed_path.path == '/refresh/events':
+      logger.info('Web request for /refresh/events')
+      logger.debug('Request data: ' + str(headers))
+      try:
+        self.heating.get_next_event()
+        self.send_response(200)
+      except Exception as e:
+        self.send_response(500)
+        self.end_headers()
+        raise
+      self.end_headers()
 
   def log_message(self, format, *args):
     return
