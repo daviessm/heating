@@ -281,8 +281,8 @@ class Heating(object):
           logger.debug('Future event starting at ' + str(event_next_time.astimezone(LOCAL_TIMEZONE)) + \
             ' temp difference is ' + str(event_temp_diff))
           if event_temp_diff > 0:
-            #Start 25 minutes earlier for each degree the heating is below the desired temp, plus 20 minutes.
-            event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * 25 * 60) + (20 * 60))
+            #Start 38 minutes earlier for each degree the heating is below the desired temp, plus 25 minutes.
+            event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * 38 * 60) + (25 * 60))
             logger.debug('Future event needs warm up, due on at ' + str(event_time_due_on.astimezone(LOCAL_TIMEZONE)))
             if time_due_on is None or event_time_due_on < time_due_on or event_time_due_on < current_time:
               time_due_on = event_time_due_on
