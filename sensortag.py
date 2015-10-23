@@ -44,13 +44,15 @@ class SensorTag(object):
         count = 0
         while tAmb == 0 and count < 8:
           count += 1
-          time.sleep(0.1)
+          time.sleep(0.2)
           result = self.tag.char_read('f000aa01-0451-4000-b000-000000000000')
           (rawVobj, rawTamb) = struct.unpack('<hh', result)
           tAmb = rawTamb / 128.0
 
         #Turn temperature sensor off
         self.tag.char_write('f000aa02-0451-4000-b000-000000000000', bytearray([0x00]))
+        if count == 8:
+          self.failures += 1
 
       except (NotConnectedError, NotificationTimeout) as nce1:
         try:
@@ -70,15 +72,16 @@ class SensorTag(object):
       
 
     if tAmb == 0:
+      self.amb_temp = None
       raise NoTemperatureException('Could not get temperature from ' + self.mac)
     logger.info('Got temperature ' + str(tAmb) + ' from ' + self.mac)
     self.amb_temp = tAmb
 
   @staticmethod
   def find_sensortags():
-    dongle = pygatt.backends.DBusBackend(connect_timeout=17)
+    dongle = pygatt.backends.DBusBackend(connect_timeout=20)
     logger.debug('Scanning for SensorTags')
-    devices = dongle.scan(timeout=10)
+    devices = dongle.scan(timeout=20)
     sensortags = {}
     for device in devices:
       if 'SensorTag' in device['name']:
