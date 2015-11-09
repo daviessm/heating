@@ -68,4 +68,6 @@ class HttpHandler(BaseHTTPRequestHandler):
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
   '''Handle requests in a separate thread.'''
-
+  def shutdown(self):
+    self.socket.close()
+    HTTPServer.shutdown(self)
