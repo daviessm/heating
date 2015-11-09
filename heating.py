@@ -1,7 +1,7 @@
 #!/usr/bin/python
 import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uuid
 import logging, logging.config, logging.handlers
-from sensortag import SensorTag, NoTemperatureException
+from sensortag import SensorTag, NoTemperatureException, NoTagsFoundException
 from relay import Relay
 from httpserver import *
 
@@ -51,8 +51,8 @@ class Heating(object):
     self.credentials = self.get_credentials()
 
     HttpHandler.heating = self
-    server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
-    http_server_thread = threading.Thread(target=server.serve_forever)
+    self.http_server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
+    http_server_thread = threading.Thread(target=self.http_server.serve_forever)
     http_server_thread.setDaemon(True) # don't hang on exit
     http_server_thread.start()
 
@@ -71,12 +71,29 @@ class Heating(object):
     self.sched.add_job(self.get_next_event, trigger = 'cron', \
         next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), minute = '*/' + str(UPDATE_CALENDAR_INTERVAL))
 
-    self.sched.start()
+    try:
+      self.sched.start()
+    except Exception as e:
+      logger.error('Error in scheduler: ' + str(e))
+      for mac, sensor in self.temp_sensors.iteritems():
+        try:
+          sensor.tag._backend.stop()
+        except Exception as e1:
+          pass
+      self.http_server.shutdown()
+      self.sched.shutdown(wait = False)
 
   def scheduler_listener(self, event):
+    #Kill all the things
     if event.exception is not None:
-      logger.error(str(event))
-      raise Exception('Error in a thread somewhere')
+      logger.error('Error in scheduled event: ' + str(event))
+      for mac, sensor in self.temp_sensors.iteritems():
+        try:
+          sensor.tag._backend.stop()
+        except Exception as e1:
+          pass
+      self.http_server.shutdown()
+      self.sched.shutdown(wait = False)
 
   def on(self, proportion):
     self.time_on = pytz.utc.localize(datetime.datetime.utcnow())
@@ -146,8 +163,7 @@ class Heating(object):
         temps.append(sensor.amb_temp)
 
     if not temps:
-      logger.info('No temperatures.')
-      return
+      raise NoTemperatureException('No temperatures.')
     #self.current_temp = sum(temps) / float(len(temps))
     self.current_temp = min(temps)
     logger.info('Overall temperature is now ' + str(self.current_temp) + ' from ' + str(temps))
@@ -391,15 +407,15 @@ class Heating(object):
       logger.info('Storing credentials to ' + credential_path)
     return credentials
 
+class NoTemperatureException(Exception):
+  def __init__(self):
+    super(self, Exception)
+
 def main():
   logger = logging.getLogger('heating')
   heating = Heating()
   try:
     heating.start()
-  except KeyboardInterrupt as e:
-    for mac, sensor in heating.temp_sensors.iteritems():
-      sensor.tag._backend.stop()
-    sys.exit(0)
   except Exception as e:
     logger.exception('Exception in main thread. Exiting.')
     for mac, sensor in heating.temp_sensors.iteritems():
@@ -407,8 +423,21 @@ def main():
         sensor.tag._backend.stop()
       except Exception as e1:
         pass
-    heating.relay.off()
-    sys.exit(1)
+
+    if heating.relay:
+      heating.relay.off()
+
+    heating.http_server.shutdown()
+    heating.sched.shutdown(wait = False)
+
+    if isinstance(e, NoTagsFoundException):
+      sys.exit(3)
+    if isinstance(e, NoTemperatureException):
+      sys.exit(2)
+    if isinstance(e, KeyboardInterrupt):
+      sys.exit(0)
+    else:
+      sys.exit(1)
 
 if __name__ == '__main__':
   main()
