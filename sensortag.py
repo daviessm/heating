@@ -69,7 +69,6 @@ class SensorTag(object):
         logger.debug('dbe: ' + str(dbe))
         self.failures += 1
         time.sleep(1)
-      
 
     if tAmb == 0:
       self.amb_temp = None
@@ -92,6 +91,9 @@ class SensorTag(object):
       logger.exception('No SensorTags found!')
       raise Exception('No SensorTags found!')
     return sensortags
+
+class NoTagsFoundException(Exception):
+  pass
 
 class NoTemperatureException(Exception):
   pass
