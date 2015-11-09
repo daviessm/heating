@@ -80,7 +80,7 @@ class SensorTag(object):
   def find_sensortags():
     dongle = pygatt.backends.DBusBackend(connect_timeout=20)
     logger.debug('Scanning for SensorTags')
-    devices = dongle.scan(timeout=20)
+    devices = dongle.scan(min_devices=1, device_name="SensorTag")
     sensortags = {}
     for device in devices:
       if 'SensorTag' in device['name']:
