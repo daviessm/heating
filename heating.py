@@ -418,6 +418,15 @@ def main():
     heating.start()
   except Exception as e:
     logger.exception('Exception in main thread. Exiting.')
+
+    msg = MIMEText('Heating error')
+    msg['Subject'] = 'Heating: Exception in main thread'
+    msg['From'] = EMAIL_FROM
+    msg['To'] = EMAIL_TO
+    smtp = smtplib.SMTP(EMAIL_SERVER)
+    smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
+    smtp.quit()
+
     for mac, sensor in heating.temp_sensors.iteritems():
       try:
         sensor.tag._backend.stop()
