@@ -19,6 +19,8 @@ from oauth2client import tools
 UPDATE_CALENDAR_INTERVAL=60 #minutes
 UPDATE_TEMPERATURE_INTERVAL=60 #seconds
 PROPORTIONAL_HEATING_INTERVAL=30 # minutes
+EFFECT_DELAY=25 #minutes
+MINS_PER_DEGREE=28 #minutes
 MINIMUM_TEMP=9
 CALENDAR_ID='fkjecfkial36lojtvjlua77qio@group.calendar.google.com'
 EMAIL_FROM='root@steev.me.uk'
@@ -297,8 +299,8 @@ class Heating(object):
           logger.debug('Future event starting at ' + str(event_next_time.astimezone(LOCAL_TIMEZONE)) + \
             ' temp difference is ' + str(event_temp_diff))
           if event_temp_diff > 0:
-            #Start 38 minutes earlier for each degree the heating is below the desired temp, plus 25 minutes.
-            event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * 38 * 60) + (25 * 60))
+            #Start X minutes earlier for each degree the heating is below the desired temp, plus Y minutes.
+            event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * MINS_PER_DEGREE * 60) + (EFFECT_DELAY * 60))
             logger.debug('Future event needs warm up, due on at ' + str(event_time_due_on.astimezone(LOCAL_TIMEZONE)))
             if time_due_on is None or event_time_due_on < time_due_on or event_time_due_on < current_time:
               time_due_on = event_time_due_on
