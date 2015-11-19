@@ -23,6 +23,7 @@ EFFECT_DELAY=25 #minutes
 MINS_PER_DEGREE=28 #minutes
 MINIMUM_TEMP=9
 CALENDAR_ID='fkjecfkial36lojtvjlua77qio@group.calendar.google.com'
+CALENDAR_TIMEOUT=30 #seconds
 EMAIL_FROM='root@steev.me.uk'
 EMAIL_TO=EMAIL_FROM
 EMAIL_SERVER='localhost'
@@ -174,7 +175,7 @@ class Heating(object):
 
   def get_next_event(self):
     self.calendar_lock.acquire()
-    http = self.credentials.authorize(httplib2.Http())
+    http = self.credentials.authorize(httplib2.Http(timeout=CALENDAR_TIMEOUT))
     service = discovery.build('calendar', 'v3', http=http)
 
     now = datetime.datetime.utcnow().isoformat() + 'Z'
