@@ -16,7 +16,7 @@ import oauth2client
 from oauth2client import client
 from oauth2client import tools
 
-UPDATE_CALENDAR_INTERVAL=360 #minutes
+UPDATE_CALENDAR_INTERVAL=6 #hours
 UPDATE_TEMPERATURE_INTERVAL=60 #seconds
 PROPORTIONAL_HEATING_INTERVAL=30 # minutes
 EFFECT_DELAY=25 #minutes
@@ -72,7 +72,7 @@ class Heating(object):
 
     #Get new events every X minutes
     self.sched.add_job(self.get_next_event, trigger = 'cron', \
-        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), minute = '*/' + str(UPDATE_CALENDAR_INTERVAL))
+        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*/' + str(UPDATE_CALENDAR_INTERVAL), minute = 0)
 
     try:
       self.sched.start()
