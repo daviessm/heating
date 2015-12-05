@@ -16,11 +16,11 @@ import oauth2client
 from oauth2client import client
 from oauth2client import tools
 
-UPDATE_CALENDAR_INTERVAL=60 #minutes
+UPDATE_CALENDAR_INTERVAL=360 #minutes
 UPDATE_TEMPERATURE_INTERVAL=60 #seconds
 PROPORTIONAL_HEATING_INTERVAL=30 # minutes
 EFFECT_DELAY=25 #minutes
-MINS_PER_DEGREE=28 #minutes
+MINS_PER_DEGREE=20 #minutes
 MINIMUM_TEMP=9
 CALENDAR_ID='fkjecfkial36lojtvjlua77qio@group.calendar.google.com'
 CALENDAR_TIMEOUT=30 #seconds
