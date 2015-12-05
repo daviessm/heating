@@ -57,12 +57,12 @@ class HttpHandler(BaseHTTPRequestHandler):
       try:
         if self.headers.getheader('X-Goog-Resource-State') != 'sync':
           self.heating.get_next_event()
-          self.send_response(200)
+        self.send_response(204)
+        self.end_headers()
       except Exception as e:
         self.send_response(500)
         self.end_headers()
         raise
-      self.end_headers()
     else:
       logger.info('POST request for ' + parsed_path.path + ', ignoring')
       self.send_error(404)
