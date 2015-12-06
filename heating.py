@@ -188,13 +188,13 @@ class Heating(object):
       logger.debug('Sending request: ' + str({'id':id, \
               'type':'web_hook', \
               'address':'https://www.steev.me.uk/heating/events', \
-              'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60))*1000 \
+              'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60*60))*1000 \
              }))
       hook_response = service.events().watch(calendarId=CALENDAR_ID, \
         body={'id':id, \
               'type':'web_hook', \
               'address':'https://www.steev.me.uk/heating/events', \
-              'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60))*1000 \
+              'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60*60))*1000 \
              })\
         .execute()
       logger.debug('Got response' + str(hook_response) + ' from web_hook call')
