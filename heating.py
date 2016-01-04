@@ -400,6 +400,7 @@ class Heating(object):
     '''
     home_dir = os.path.expanduser('~')
     credential_dir = os.path.join(home_dir, '.credentials')
+    logger.debug('Getting credentials from ' + credential_dir)
     if not os.path.exists(credential_dir):
       os.makedirs(credential_dir)
     credential_path = os.path.join(credential_dir, 'calendar-heating.json')
