@@ -53,13 +53,6 @@ class Heating(object):
     logger.info('Starting')
     self.credentials = self.get_credentials()
 
-    HttpHandler.heating = self
-    logger.debug('Starting HTTP server')
-    self.http_server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
-    http_server_thread = threading.Thread(target=self.http_server.serve_forever)
-    http_server_thread.setDaemon(True) # don't hang on exit
-    http_server_thread.start()
-
     logger.debug('Setting up scheduler error handler')
     self.sched = BlockingScheduler()
     self.sched.add_listener(self.scheduler_listener, EVENT_JOB_ERROR)
@@ -77,6 +70,13 @@ class Heating(object):
     #Get new events every X minutes
     self.sched.add_job(self.get_next_event, trigger = 'cron', \
         next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*/' + str(UPDATE_CALENDAR_INTERVAL), minute = 0)
+
+    HttpHandler.heating = self
+    logger.debug('Starting HTTP server')
+    self.http_server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
+    http_server_thread = threading.Thread(target=self.http_server.serve_forever)
+    http_server_thread.setDaemon(True) # don't hang on exit
+    http_server_thread.start()
 
     logger.debug('Starting scheduler')
     try:
@@ -428,7 +428,7 @@ def main():
   except Exception as e:
     logger.exception('Exception in main thread. Exiting.')
 
-    msg = MIMEText('Heating error')
+    msg = MIMEText('Heating error:\n\n' + str(e))
     msg['Subject'] = 'Heating: Exception in main thread'
     msg['From'] = EMAIL_FROM
     msg['To'] = EMAIL_TO
@@ -436,11 +436,12 @@ def main():
     smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
     smtp.quit()
 
-    for mac, sensor in heating.temp_sensors.iteritems():
-      try:
-        sensor.tag._backend.stop()
-      except Exception as e1:
-        pass
+    if heating.temp_sensors:
+      for mac, sensor in heating.temp_sensors.iteritems():
+        try:
+          sensor.tag._backend.stop()
+        except Exception as e1:
+          pass
 
     if heating.relay:
       heating.relay.off()
