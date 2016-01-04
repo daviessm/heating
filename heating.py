@@ -54,18 +54,22 @@ class Heating(object):
     self.credentials = self.get_credentials()
 
     HttpHandler.heating = self
+    logger.debug('Starting HTTP server')
     self.http_server = ThreadedHTTPServer(('localhost', 8080), HttpHandler)
     http_server_thread = threading.Thread(target=self.http_server.serve_forever)
     http_server_thread.setDaemon(True) # don't hang on exit
     http_server_thread.start()
 
+    logger.debug('Setting up scheduler error handler')
     self.sched = BlockingScheduler()
     self.sched.add_listener(self.scheduler_listener, EVENT_JOB_ERROR)
 
+    logger.debug('Searching for SensorTags')
     self.relay = Relay.find_relay()
     self.temp_sensors = SensorTag.find_sensortags()
 
     #Get a new temperature every minute
+    logger.debug('Creating scheduler jobs')
     for mac, sensor in self.temp_sensors.iteritems():
       sensor.temp_job_id = self.sched.add_job(self.get_temperature, trigger = 'cron', \
         next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), args = (sensor,), second = 0)
@@ -74,6 +78,7 @@ class Heating(object):
     self.sched.add_job(self.get_next_event, trigger = 'cron', \
         next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*/' + str(UPDATE_CALENDAR_INTERVAL), minute = 0)
 
+    logger.debug('Starting scheduler')
     try:
       self.sched.start()
     except Exception as e:
