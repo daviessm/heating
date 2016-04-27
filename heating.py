@@ -3,6 +3,7 @@ import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uui
 import logging, logging.config, logging.handlers
 from sensortag import SensorTag, NoTemperatureException, NoTagsFoundException
 from relay import Relay
+from btrelay import BTRelay
 from httpserver import *
 
 from dateutil import parser
@@ -57,9 +58,10 @@ class Heating(object):
     self.sched = BlockingScheduler()
     self.sched.add_listener(self.scheduler_listener, EVENT_JOB_ERROR)
 
+    logger.debug('Searching for relay')
+    self.relay = BTRelay.find_relay()
     logger.debug('Searching for SensorTags')
-    self.relay = Relay.find_relay()
-    self.temp_sensors = SensorTag.find_sensortags()
+    #self.temp_sensors = SensorTag.find_sensortags()
 
     #Get a new temperature every minute
     logger.debug('Creating scheduler jobs')
