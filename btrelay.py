@@ -48,7 +48,6 @@ class BTRelay(Relay):
       return ord(status)
     except BluetoothError as e:
       raise
-   
 
   @staticmethod
   def find_relay():
@@ -66,7 +65,6 @@ class BTRelay(Relay):
           logger.info("Found relay with address " + addr + " and status " + str(ord(status)))
           relay = BTRelay(addr,ord(status))
           return relay
+      return None
     except BluetoothError as e:
       raise
-
-
