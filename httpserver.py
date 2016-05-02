@@ -40,7 +40,7 @@ class HttpHandler(BaseHTTPRequestHandler):
       self.end_headers()
       self.wfile.write(str(self.heating.proportional_time) + '\n')
     elif parsed_path.path == '/heating_status':
-      logger.info('Web request for /heating_status, sending ' + str(self.heating.relay.status))
+      logger.info('Web request for /heating_status, sending ' + str(self.heating.relay._status))
       self.send_response(200)
       self.end_headers()
       self.wfile.write(str(self.heating.relay.status) + '\n')
