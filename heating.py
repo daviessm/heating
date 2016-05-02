@@ -343,7 +343,7 @@ class Heating(object):
             new_proportional_time = PROPORTIONAL_HEATING_INTERVAL
 
           #Are we currently on or off?
-          if self.relay.status == 0: #Off
+          if self.relay._status == 0 or self.time_on is None: #Off
             if self.time_off is None:
               time_due_on = next_time
               new_time_due_on = next_time
@@ -362,7 +362,7 @@ class Heating(object):
             else:
               if new_proportional_time != self.proportional_time:
                 logger.info('Changing time next due on.')
-                self.set_relay_trigger(new_proportional_time, self.relay.status)
+                self.set_relay_trigger(new_proportional_time, self.relay._status)
               if time_due_on != new_time_due_on:
                 logger.info('Heating was off, due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)) +\
                              '. Now due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)))
@@ -380,7 +380,7 @@ class Heating(object):
             else:
               if new_proportional_time != self.proportional_time:
                 logger.info('Changing time next due off.')
-                self.set_relay_trigger(new_proportional_time, self.relay.status)
+                self.set_relay_trigger(new_proportional_time, self.relay._status)
               if new_time_due_off != time_due_off:
                 logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +\
                              '. Now due off at ' + str(new_time_due_off.astimezone(LOCAL_TIMEZONE)))

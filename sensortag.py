@@ -1,8 +1,10 @@
 import pygatt, pygatt.backends
 import struct, time, logging
+import dbus
 
 from pygatt.exceptions import NotConnectedError, NotificationTimeout
 from pygatt.backends.dbusbackend.dbusbackend import DBusBluetoothLEDevice
+
 
 logger = logging.getLogger('heating')
 
@@ -65,10 +67,10 @@ class SensorTag(object):
           logger.debug('nce2: ' + str(nce2))
           self.failures += 1
           time.sleep(1)
-      except DBusException as dbe:
-        logger.debug('dbe: ' + str(dbe))
-        self.failures += 1
-        time.sleep(1)
+      #except DBusException as dbe:
+      #  logger.debug('dbe: ' + str(dbe))
+      #  self.failures += 1
+      #  time.sleep(1)
 
     if tAmb == 0:
       self.amb_temp = None
