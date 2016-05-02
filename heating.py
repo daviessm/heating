@@ -49,6 +49,7 @@ class Heating(object):
     self.proportional_time = 0
     self.time_on = None
     self.time_off = None
+    self.event_sync_id = None
 
   def start(self):
     logger.info('Starting')
@@ -191,14 +192,14 @@ class Heating(object):
       eventsResult = service.events().list(
         calendarId=CALENDAR_ID, timeMin=now, maxResults=3, singleEvents=True, orderBy='startTime').execute()
       events = eventsResult.get('items', [])
-      id = str(uuid.uuid4())
-      logger.debug('Sending request: ' + str({'id':id, \
+      self.event_sync_id = str(uuid.uuid4())
+      logger.debug('Sending request: ' + str({'id':self.event_sync_id, \
               'type':'web_hook', \
               'address':'https://www.steev.me.uk/heating/events', \
               'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60*60))*1000 \
              }))
       hook_response = service.events().watch(calendarId=CALENDAR_ID, \
-        body={'id':id, \
+        body={'id':self.event_sync_id, \
               'type':'web_hook', \
               'address':'https://www.steev.me.uk/heating/events', \
               'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60*60))*1000 \
