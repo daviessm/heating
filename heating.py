@@ -61,7 +61,7 @@ class Heating(object):
     logger.debug('Searching for relay')
     self.relay = BTRelay.find_relay()
     logger.debug('Searching for SensorTags')
-    #self.temp_sensors = SensorTag.find_sensortags()
+    self.temp_sensors = SensorTag.find_sensortags()
 
     #Get a new temperature every minute
     logger.debug('Creating scheduler jobs')
