@@ -43,7 +43,7 @@ class HttpHandler(BaseHTTPRequestHandler):
       logger.info('Web request for /heating_status, sending ' + str(self.heating.relay._status))
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(str(self.heating.relay.status) + '\n')
+      self.wfile.write(str(self.heating.relay._status) + '\n')
     else:
       logger.info('GET request for ' + parsed_path.path + ', ignoring')
       self.send_error(404)
