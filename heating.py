@@ -266,11 +266,12 @@ class Heating(object):
     current_time = pytz.utc.localize(datetime.datetime.utcnow())
     current_temp = self.current_temp
     time_due_on  = None
+    have_temp_event = False
 
     if self.events is not None:
       index = 0
       #Find the next event that isn't "On"
-      while index <= 2:
+      while index < 3:
         next_time =     self.events[index]['start_date']
         next_time_end = self.events[index]['end_date']
         next_temp =     self.events[index]['desired_temp']
@@ -285,6 +286,7 @@ class Heating(object):
             self.processing_lock.release()
             return
         else:
+          have_temp_event = True
           break
 
       logger.debug('Processing data: ' + str(next_time.astimezone(LOCAL_TIMEZONE)) + \
@@ -293,7 +295,7 @@ class Heating(object):
     if self.events is None or \
         (next_time     > pytz.utc.localize(datetime.datetime.utcnow()) and \
          next_time_end > pytz.utc.localize(datetime.datetime.utcnow())) or \
-        index == 3:
+        have_temp_event == False:
       self.desired_temp = str(MINIMUM_TEMP)
     else:
       self.desired_temp = str(next_temp)
@@ -303,9 +305,10 @@ class Heating(object):
       logger.info('Temperature is below minimum, turning on')
       self.on(PROPORTIONAL_HEATING_INTERVAL)
 
-    elif self.events is None or index == 3:
-      #If we don't have an event yet, warn but do nothing.
+    elif self.events is None or not have_temp_event:
+      #If we don't have an event yet, warn and ensure relay is off
       logger.warn('No next event available.')
+      self.off(0)
 
     elif next_time_end < current_time:
       #If the last event ended in the past, off.
