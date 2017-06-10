@@ -2,28 +2,15 @@ import pygatt, pygatt.backends
 import struct, time, logging
 import dbus
 
+from temp_sensor import TempSensor
 from pygatt.exceptions import NotConnectedError, NotificationTimeout
 from pygatt.backends.dbusbackend.dbusbackend import DBusBluetoothLEDevice
 
-
 logger = logging.getLogger('heating')
 
-class SensorTag(object):
+class SensorTag(TempSensor):
   def __init__(self, dongle, mac):
-    self.mac = mac
-    self.dongle = dongle
-    self.failures = 0
-    self.sent_alert = False
-    self.amb_temp = None
-    self.temp_job_id = None
-    self.tag = DBusBluetoothLEDevice(self.mac, self.dongle)
-    self.connect()
-
-  def connect(self):
-    self.tag.connect()
-
-  def disconnect(self):
-    self.tag.disconnect()
+    TempSensor.__init__(self, dongle, mac)
 
   def get_ambient_temp(self):
     tAmb = 0
@@ -77,26 +64,4 @@ class SensorTag(object):
       raise NoTemperatureException('Could not get temperature from ' + self.mac)
     logger.info('Got temperature ' + str(tAmb) + ' from ' + self.mac)
     self.amb_temp = tAmb
-
-  @staticmethod
-  def find_sensortags():
-    dongle = pygatt.backends.DBusBackend(connect_timeout=20)
-    logger.debug('Scanning for SensorTags')
-    devices = dongle.scan(min_devices=1, device_name="SensorTag")
-    sensortags = {}
-    for device in devices:
-      if 'SensorTag' in device['name']:
-        logger.info('Found SensorTag with address: ' + device['address'])
-        sensortags[device['address']] = SensorTag(dongle, device['address'])
-    if len(sensortags) == 0:
-      dongle.stop()
-      logger.exception('No SensorTags found!')
-      raise Exception('No SensorTags found!')
-    return sensortags
-
-class NoTagsFoundException(Exception):
-  pass
-
-class NoTemperatureException(Exception):
-  pass
 

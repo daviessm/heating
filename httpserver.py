@@ -40,10 +40,15 @@ class HttpHandler(BaseHTTPRequestHandler):
       self.end_headers()
       self.wfile.write(str(self.heating.proportional_time) + '\n')
     elif parsed_path.path == '/heating_status':
-      logger.info('Web request for /heating_status, sending ' + str(self.heating.relay._status))
+      logger.info('Web request for /heating_status, sending ' + str(self.heating.relay.one_status(1)))
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(str(self.heating.relay._status) + '\n')
+      self.wfile.write(str(self.heating.relay.one_status(1)) + '\n')
+    elif parsed_path.path == '/preheat_status':
+      logger.info('Web request for /preheat_status, sending ' + str(self.heating.relay.one_status(2)))
+      self.send_response(200)
+      self.end_headers()
+      self.wfile.write(str(self.heating.relay.one_status(2)) + '\n')
     else:
       logger.info('GET request for ' + parsed_path.path + ', ignoring')
       self.send_error(404)
