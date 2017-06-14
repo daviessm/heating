@@ -329,7 +329,7 @@ class Heating(object):
             have_preheat = True
             if self.relay.one_status(2) == 0:
               self.preheat_on(self.events[index]['end_date'])
-              break
+            break
 
         if (not have_preheat) and self.relay.one_status(2) == 1:
           self.preheat_off()
