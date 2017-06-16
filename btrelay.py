@@ -53,7 +53,7 @@ class BTRelay(Relay):
   @staticmethod
   def find_relay():
     try:
-      devices = discover_devices(lookup_names=True)
+      devices = discover_devices(lookup_names=True,duration=30)
       logger.debug("Found devices: " + str(devices))
       for (addr, name) in devices:
         if name == 'SPP-CA':
@@ -66,6 +66,7 @@ class BTRelay(Relay):
           logger.info("Found relay with address " + addr + " and status " + str(ord(status)))
           relay = BTRelay(addr,ord(status))
           return relay
-      return None
+      logger.exception('No relay found!')
+      raise Exception('No relay found!')
     except BluetoothError as e:
       raise
