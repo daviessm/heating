@@ -51,11 +51,12 @@ class TempSensor(object):
     devices = scanner.scan(10.0)
     sensors = {}
     for device in devices:
+      name = ''
       if device.getValueText(9):
         name = device.getValueText(9)
       elif device.getValueText(8):
         name = device.getValueText(8)
-      print name
+      logger.debug('Device name: ' + name)
       if 'SensorTag' in name:
         logger.info('Found SensorTag with address: ' + device.addr)
         sensors[device.addr] = SensorTag(device.addr, device.addrType)
