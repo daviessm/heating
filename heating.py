@@ -74,6 +74,11 @@ class Heating(object):
     self.sched = BlockingScheduler()
     self.sched.add_listener(self.scheduler_listener, EVENT_JOB_ERROR)
 
+    logger.debug('Searching for relay')
+    self.relay = BTRelay.find_relay()
+    logger.debug('Searching for SensorTags')
+    self.temp_sensors = SensorTag.find_sensortags()
+
     #Get a new temperature every minute
     logger.debug('Creating scheduler jobs')
     for mac, sensor in self.temp_sensors.iteritems():
@@ -298,7 +303,9 @@ class Heating(object):
 
       self.events = parsed_events
 
+    self.events = parsed_events
     self.calendar_lock.release()
+
     self.process()
 
   def process(self):
@@ -560,3 +567,6 @@ if __name__ == '__main__':
       sys.exit(0)
     else:
       sys.exit(1)
+
+if __name__ == '__main__':
+  main()
