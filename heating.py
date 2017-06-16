@@ -1,5 +1,5 @@
 #!/usr/bin/python
-import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uuid
+import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uuid, urllib, json
 import logging, logging.config, logging.handlers
 from temp_sensor import TempSensor, NoTemperatureException, NoTagsFoundException
 from relay import Relay
@@ -60,9 +60,14 @@ class Heating(object):
     self.temp_sensors = None
     self.sched = None
 
+    self.outside_temp = None
+    self.outside_apparent_temp = None
+
   def start(self):
     logger.info('Starting')
     self.credentials = self.get_credentials()
+
+    self.darksky_details = self.get_darksky_details()
 
     logger.debug('Searching for SensorTags')
     self.temp_sensors = TempSensor.find_temp_sensors()
@@ -83,6 +88,9 @@ class Heating(object):
     #Get new events every X minutes
     self.sched.add_job(self.get_next_event, trigger = 'cron', \
         next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*/' + str(UPDATE_CALENDAR_INTERVAL), minute = 0)
+
+    self.sched.add_job(self.update_outside_temperature, trigger = 'cron', \
+        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*', minute = '*/15')
 
     HttpHandler.heating = self
     logger.debug('Starting HTTP server')
@@ -301,6 +309,19 @@ class Heating(object):
     self.calendar_lock.release()
     self.process()
 
+  def update_outside_temperature(self):
+    logger.info('Getting new outside temperature')
+    darksky_url = 'https://api.darksky.net/forecast/' + self.darksky_details['api_key'] + '/' + self.darksky_details['latlong'] + '?exclude=[minutely,hourly,daily]&units=si'
+    data = json.loads(urllib.urlopen(darksky_url).read())
+
+    if data['currently']:
+      if data['currently']['apparentTemperature']:
+        self.outside_apparent_temp = data['currently']['apparentTemperature']
+        logger.info('Got outside apparent temperature: ' + str(self.outside_apparent_temp))
+      if data['currently']['temperature']:
+        self.outside_temp = data['currently']['temperature']
+        logger.info('Got outside temperature: ' + str(self.outside_temp))
+
   def process(self):
     #Main calculations. Figure out whether the heating needs to be on or not.
     if self.current_temp is None:
@@ -514,6 +535,11 @@ class Heating(object):
       credentials = tools.run_flow(flow, store, flags)
       logger.info('Storing credentials to ' + credential_path)
     return credentials
+
+  def get_darksky_details(self):
+    details = json.loads(urllib.urlopen('darksky_details.json').read())
+    logger.debug('DarkSky details: ' + str(details))
+    return details
 
 class NoTemperatureException(Exception):
   def __init__(self):

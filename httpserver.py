@@ -49,6 +49,16 @@ class HttpHandler(BaseHTTPRequestHandler):
       self.send_response(200)
       self.end_headers()
       self.wfile.write(str(self.heating.relay.one_status(2)) + '\n')
+    elif parsed_path.path == '/outside_temp':
+      logger.info('Web request for /outside_temp, sending ' + str(self.heating.outside_temp))
+      self.send_response(200)
+      self.end_headers()
+      self.wfile.write(str(self.heating.outside_temp) + '\n')
+    elif parsed_path.path == '/outside_apparent_temp':
+      logger.info('Web request for /outside_apparent_temp, sending ' + str(self.heating.outside_apparent_temp))
+      self.send_response(200)
+      self.end_headers()
+      self.wfile.write(str(self.heating.outside_apparent_temp) + '\n')
     else:
       logger.info('GET request for ' + parsed_path.path + ', ignoring')
       self.send_error(404)
