@@ -145,14 +145,12 @@ class Heating(object):
     self.set_heating_trigger(proportion, 0)
 
   def preheat_on(self, time_off):
-    logger.info('Preheat on')
     self.relay_lock.acquire()
     self.relay.one_on(2)
     self.relay_lock.release()
     self.set_preheat_trigger(time_off)
 
   def preheat_off(self):
-    logger.info("Preheat off")
     self.relay_lock.acquire()
     self.relay.one_off(2)
     self.relay_lock.release()
@@ -195,7 +193,7 @@ class Heating(object):
       self.preheat_trigger = None
     logger.info('Preheat off at ' + str(time_off.astimezone(LOCAL_TIMEZONE)))
     self.preheat_trigger = self.sched.add_job(\
-      self.preheat_off, trigger='date', run_date=time_off, name='Preheat off at ' + str(time_off.astimezone(LOCAL_TIMEZONE)))
+      self.process, trigger='date', run_date=time_off, name='Preheat off at ' + str(time_off.astimezone(LOCAL_TIMEZONE)))
 
 
   def get_temperature(self, sensor):
@@ -305,6 +303,8 @@ class Heating(object):
             self.time_off = None
 
       self.events = parsed_events
+    else:
+      self.events = None
 
     self.calendar_lock.release()
     self.process()
@@ -323,6 +323,7 @@ class Heating(object):
         logger.info('Got outside temperature: ' + str(self.outside_temp))
 
   def process(self):
+    logger.debug('Processing')
     #Main calculations. Figure out whether the heating needs to be on or not.
     if self.current_temp is None:
       return
@@ -334,8 +335,14 @@ class Heating(object):
     time_due_on  = None
     have_temp_event = False
     forced_on = False
+    have_preheat = False
 
-    if self.events is not None:
+    if current_temp < MINIMUM_TEMP:
+      #If we're below the minimum allowed temperature, turn on at full blast.
+      logger.info('Temperature is below minimum, turning on')
+      self.heating_on(PROPORTIONAL_HEATING_INTERVAL)
+
+    elif self.events is not None:
       #Find preheat events
       index = -1
       while index < 3:
@@ -344,16 +351,16 @@ class Heating(object):
         if index >= len(self.events):
           break
 
-        have_preheat = False
         if self.events[index]['desired_temp'] == 'Preheat':
           if self.events[index]['start_date'] < current_time and not self.events[index]['end_date'] < current_time:
             have_preheat = True
             if self.relay.one_status(2) == 0:
+              logger.info('Preheat on')
               self.preheat_on(self.events[index]['end_date'])
             break
 
-        if (not have_preheat) and self.relay.one_status(2) == 1:
-          self.preheat_off()
+      if (not have_preheat) and self.relay.one_status(2) == 1:
+        self.preheat_off()
 
       #Find normal events
       index = -1
@@ -387,124 +394,123 @@ class Heating(object):
             (not have_temp_event and not forced_on):
           self.desired_temp = str(MINIMUM_TEMP)
 
-      if current_temp < MINIMUM_TEMP:
-        #If we're below the minimum allowed temperature, turn on at full blast.
-        logger.info('Temperature is below minimum, turning on')
-        self.heating_on(PROPORTIONAL_HEATING_INTERVAL)
+      logger.debug('Processing data: ' + str(next_time.astimezone(LOCAL_TIMEZONE)) + \
+        ' to ' + str(next_time_end.astimezone(LOCAL_TIMEZONE)) + ', ' + str(next_temp))
 
-      elif self.events is None or (not have_temp_event and not forced_on):
-        #If we don't have an event yet, warn and ensure relay is off
-        logger.warn('No next event available.')
+      self.desired_temp = str(next_temp)
+
+      if next_time_end < current_time:
+        #If the last event ended in the past, off.
+        logger.warn('Event end time is in the past.')
         self.heating_off(0)
 
-      else:
-        logger.debug('Processing data: ' + str(next_time.astimezone(LOCAL_TIMEZONE)) + \
-          ' to ' + str(next_time_end.astimezone(LOCAL_TIMEZONE)) + ', ' + str(next_temp))
+      elif not forced_on:
+        temp_diff = next_temp - current_temp
+        new_proportional_time = None
+        if next_time < current_time:
+          time_due_on = next_time
+          logger.info('Currently in an event starting at ' + str(next_time.astimezone(LOCAL_TIMEZONE)) + \
+            ' ending at ' + str(next_time_end.astimezone(LOCAL_TIMEZONE)) + ' temp diff is ' + str(temp_diff))
 
-        self.desired_temp = str(next_temp)
+        #Check all events for warm-up temperature
+        for event in self.events:
+          if event['desired_temp'] == 'On' or event['desired_temp'] == 'Preheat':
+            continue
 
-        if next_time_end < current_time:
-          #If the last event ended in the past, off.
-          logger.warn('Event end time is in the past.')
-          self.heating_off(0)
+          event_next_time = event['start_date']
+          if event_next_time > current_time:
+            event_desired_temp = event['desired_temp']
+            event_temp_diff = event_desired_temp - current_temp
+            logger.debug('Future event starting at ' + str(event_next_time.astimezone(LOCAL_TIMEZONE)) + \
+              ' temp difference is ' + str(event_temp_diff))
+            if event_temp_diff > 0:
+              #Start X minutes earlier for each degree the heating is below the desired temp, plus Y minutes.
+              event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * MINS_PER_DEGREE * 60) + (EFFECT_DELAY * 60))
+              logger.debug('Future event needs warm up, due on at ' + str(event_time_due_on.astimezone(LOCAL_TIMEZONE)))
+              if time_due_on is None or event_time_due_on < time_due_on or event_time_due_on < current_time:
+                time_due_on = event_time_due_on
+                next_temp = event_desired_temp
+                temp_diff = event_temp_diff
+                logger.debug('Future event starting at ' + str(event_next_time.astimezone(LOCAL_TIMEZONE)) + \
+                  ' warm-up, now due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)))
+                #Full blast until 0.3 degrees difference
+                if event_temp_diff > 0.3:
+                  new_proportional_time = 30
+              elif time_due_on is None or event_next_time < time_due_on:
+                time_due_on = event_next_time
+              elif time_due_on is None or event_next_time < time_due_on:
+                time_due_on = event_next_time
 
-        elif not forced_on:
-          temp_diff = next_temp - current_temp
-          new_proportional_time = None
-          if next_time < current_time:
-            time_due_on = next_time
-            logger.info('Currently in an event starting at ' + str(next_time.astimezone(LOCAL_TIMEZONE)) + \
-              ' ending at ' + str(next_time_end.astimezone(LOCAL_TIMEZONE)) + ' temp diff is ' + str(temp_diff))
+        if time_due_on < next_time:
+          logger.info('Before an event starting at ' + str(next_time.astimezone(LOCAL_TIMEZONE)) +\
+            ' temp diff is ' + str(temp_diff) + ' now due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)))
 
-          #Check all events for warm-up temperature
-          for event in self.events:
-            if event['desired_temp'] == 'On' or event['desired_temp'] == 'Preheat':
-              continue
+        if time_due_on <= current_time:
+          if temp_diff < 0:
+            logger.info('Current temperature ' + str(current_temp) + ' is higher than the desired temperature ' + str(next_temp))
+            self.heating_off(0)
+          else:
+            if new_proportional_time is None:
+              #Calculate the proportional amount of time the heating needs to be on to reach the desired temperature
+              new_proportional_time = temp_diff * PROPORTIONAL_HEATING_INTERVAL / 2
 
-            event_next_time = event['start_date']
-            if event_next_time > current_time:
-              event_desired_temp = event['desired_temp']
-              event_temp_diff = event_desired_temp - current_temp
-              logger.debug('Future event starting at ' + str(event_next_time.astimezone(LOCAL_TIMEZONE)) + \
-                ' temp difference is ' + str(event_temp_diff))
-              if event_temp_diff > 0:
-                #Start X minutes earlier for each degree the heating is below the desired temp, plus Y minutes.
-                event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * MINS_PER_DEGREE * 60) + (EFFECT_DELAY * 60))
-                logger.debug('Future event needs warm up, due on at ' + str(event_time_due_on.astimezone(LOCAL_TIMEZONE)))
-                if time_due_on is None or event_time_due_on < time_due_on or event_time_due_on < current_time:
-                  time_due_on = event_time_due_on
-                  next_temp = event_desired_temp
-                  temp_diff = event_temp_diff
-                  logger.debug('Future event starting at ' + str(event_next_time.astimezone(LOCAL_TIMEZONE)) + \
-                    ' warm-up, now due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)))
-                  #Full blast until 0.3 degrees difference
-                  if event_temp_diff > 0.3:
-                    new_proportional_time = 30
-                elif time_due_on is None or event_next_time < time_due_on:
-                  time_due_on = event_next_time
-                elif time_due_on is None or event_next_time < time_due_on:
-                  time_due_on = event_next_time
+            if new_proportional_time < MIN_ACTIVE_PERIOD: #Minimum time boiler can be on to be worthwhile
+              new_proportional_time = MIN_ACTIVE_PERIOD
+            elif new_proportional_time > PROPORTIONAL_HEATING_INTERVAL:
+              new_proportional_time = PROPORTIONAL_HEATING_INTERVAL
 
-          if time_due_on < next_time:
-            logger.info('Before an event starting at ' + str(next_time.astimezone(LOCAL_TIMEZONE)) +\
-              ' temp diff is ' + str(temp_diff) + ' now due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)))
+            #Are we currently on or off?
+            if self.relay.one_status(1) == 0 or self.time_on is None: #Off
+              if self.time_off is None:
+                time_due_on = next_time
+                new_time_due_on = next_time
+              elif new_proportional_time <= self.proportional_time:
+                #Need to be on for less time - turn on in a bit
+                time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
+                new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
+              else:
+                #Need to be on for more time - turn on now
+                time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
+                new_time_due_on = current_time
 
-          if time_due_on <= current_time:
-            if temp_diff < 0:
-              logger.info('Current temperature ' + str(current_temp) + ' is higher than the desired temperature ' + str(next_temp))
-              self.heating_off(0)
-            else:
-              if new_proportional_time is None:
-                #Calculate the proportional amount of time the heating needs to be on to reach the desired temperature
-                new_proportional_time = temp_diff * PROPORTIONAL_HEATING_INTERVAL / 2
-
-              if new_proportional_time < MIN_ACTIVE_PERIOD: #Minimum time boiler can be on to be worthwhile
-                new_proportional_time = MIN_ACTIVE_PERIOD
-              elif new_proportional_time > PROPORTIONAL_HEATING_INTERVAL:
-                new_proportional_time = PROPORTIONAL_HEATING_INTERVAL
-
-              #Are we currently on or off?
-              if self.relay.one_status(1) == 0 or self.time_on is None: #Off
-                if self.time_off is None:
-                  time_due_on = next_time
-                  new_time_due_on = next_time
-                elif new_proportional_time <= self.proportional_time:
-                  #Need to be on for less time - turn on in a bit
-                  time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
-                  new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
-                else:
-                  #Need to be on for more time - turn on now
-                  time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
-                  new_time_due_on = current_time
-
-                if new_time_due_on <= current_time:
-                  logger.info('Heating is off, due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)) +'; Turning on')
-                  self.heating_on(new_proportional_time)
-                else:
-                  if new_proportional_time != self.proportional_time:
-                    logger.info('Changing time next due on.')
-                    self.set_heating_trigger(new_proportional_time, self.relay.one_status(1))
-                  if time_due_on != new_time_due_on:
-                    logger.info('Heating was off, due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)) +\
+              if new_time_due_on <= current_time:
+                logger.info('Heating is off, due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)) +'; Turning on')
+                self.heating_on(new_proportional_time)
+              else:
+                if new_proportional_time != self.proportional_time:
+                  logger.info('Changing time next due on.')
+                  self.set_heating_trigger(new_proportional_time, self.relay.one_status(1))
+                if time_due_on != new_time_due_on:
+                  logger.info('Heating was off, due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)) +\
                                  '. Now due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)))
-              else: #On
-                time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
-                if new_proportional_time < PROPORTIONAL_HEATING_INTERVAL:
-                  #Must have a time_on at this point
-                  new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
-                else:
-                  new_time_due_off = next_time_end
+            else: #On
+              time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
+              if new_proportional_time < PROPORTIONAL_HEATING_INTERVAL:
+                #Must have a time_on at this point
+                new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
+              else:
+                new_time_due_off = next_time_end
 
-                if new_time_due_off < current_time:
-                  logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +'; Turning off')
-                  self.heating_off(new_proportional_time)
-                else:
-                  if new_proportional_time != self.proportional_time:
-                    logger.info('Changing time next due off.')
-                    self.set_heating_trigger(new_proportional_time, self.relay.one_status(1))
-                  if new_time_due_off != time_due_off:
-                    logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +\
-                                 '. Now due off at ' + str(new_time_due_off.astimezone(LOCAL_TIMEZONE)))
+              if new_time_due_off < current_time:
+                logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +'; Turning off')
+                self.heating_off(new_proportional_time)
+              else:
+                if new_proportional_time != self.proportional_time:
+                  logger.info('Changing time next due off.')
+                  self.set_heating_trigger(new_proportional_time, self.relay.one_status(1))
+                if new_time_due_off != time_due_off:
+                  logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +\
+                               '. Now due off at ' + str(new_time_due_off.astimezone(LOCAL_TIMEZONE)))
+
+    else:
+      #If we don't have an event yet, warn and ensure relay is off
+      logger.warn('No next event available.')
+      if self.relay.one_status(1) == 1:
+        logger.debug('Heating off')
+        self.heating_off(0)
+      elif self.relay.one_status(2) == 1:
+        logger.debug('Preheat off')
+        self.preheat_off()
 
     self.check_relay_states()
     self.processing_lock.release()

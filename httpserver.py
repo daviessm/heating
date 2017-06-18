@@ -82,6 +82,7 @@ class HttpHandler(BaseHTTPRequestHandler):
     else:
       logger.info('POST request for ' + parsed_path.path + ', ignoring')
       self.send_error(404)
+    return
 
   def log_message(self, format, *args):
     return
