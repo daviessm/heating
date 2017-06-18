@@ -1,7 +1,7 @@
 #!/usr/bin/python
 import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uuid, urllib, json
 import logging, logging.config, logging.handlers
-from temp_sensor import TempSensor, NoTemperatureException, NoTagsFoundException
+from temp_sensor import TempSensor, DisconnectedException, NoTagsFoundException
 from relay import Relay
 from btrelay import BTRelay
 from usbrelay import USBRelay
@@ -57,7 +57,7 @@ class Heating(object):
     self.event_sync_id = None
     self.relay = None
     self.http_server = None
-    self.temp_sensors = None
+    self.temp_sensors = {}
     self.sched = None
 
     self.outside_temp = None
@@ -69,28 +69,30 @@ class Heating(object):
 
     self.darksky_details = self.get_darksky_details()
 
-    logger.debug('Searching for SensorTags')
-    self.temp_sensors = TempSensor.find_temp_sensors()
-    logger.debug('Searching for relay')
-    #self.relay = BTRelay.find_relay()
-    self.relay = USBRelay.find_relay()
-
     logger.debug('Setting up scheduler and error handler')
     self.sched = BlockingScheduler()
     self.sched.add_listener(self.scheduler_listener, EVENT_JOB_ERROR)
 
-    #Get a new temperature every minute
-    logger.debug('Creating scheduler jobs')
-    for mac, sensor in self.temp_sensors.iteritems():
-      sensor.temp_job_id = self.sched.add_job(self.get_temperature, trigger = 'cron', \
-        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), args = (sensor,), second = 0)
+    logger.debug('Searching for temperature sensors')
+    try:
+      self.find_temp_sensors()
+    except NoTagsFoundException as e:
+      pass
+    logger.debug('Searching for relay')
+    #self.relay = BTRelay.find_relay()
+    self.relay = USBRelay.find_relay()
 
+    logger.debug('Creating scheduler jobs')
     #Get new events every X minutes
     self.sched.add_job(self.get_next_event, trigger = 'cron', \
         next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*/' + str(UPDATE_CALENDAR_INTERVAL), minute = 0)
 
     self.sched.add_job(self.update_outside_temperature, trigger = 'cron', \
         next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*', minute = '*/15')
+
+    #Scan for new devices every minute
+    self.sched.add_job(self.find_temp_sensors, trigger = 'cron', \
+        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*', minute = '*')
 
     HttpHandler.heating = self
     logger.debug('Starting HTTP server')
@@ -126,6 +128,15 @@ class Heating(object):
     #        pass
     #    self.http_server.shutdown()
     #    self.sched.shutdown(wait = False)
+
+  def find_temp_sensors(self):
+    self.temp_sensors = TempSensor.find_temp_sensors(self.temp_sensors)
+    for sensor in self.temp_sensors.values():
+      if sensor.temp_job_id is None:
+        logger.info('Setting scheduler job for ' + sensor.mac)
+        #Get a new temperature every minute
+        sensor.temp_job_id = self.sched.add_job(self.get_temperature, trigger = 'cron', \
+          next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), args = (sensor,), second = 0)
 
   def heating_on(self, proportion):
     self.time_on = pytz.utc.localize(datetime.datetime.utcnow())
@@ -200,21 +211,10 @@ class Heating(object):
     try:
       sensor.get_ambient_temp()
     except NoTemperatureException as e:
-      logger.warn(str(e) + ' - Retrying')
-      if sensor.failures >= 5 and not sensor.sent_alert:
-        logger.error('Five failures getting temperature from ' + sensor.mac)
-        #Send a warning email
-        msg = MIMEText('Unable to reach SensorTag at ' + sensor.mac)
-        msg['Subject'] = 'Heating: Failure getting temperature reading'
-        msg['From'] = EMAIL_FROM
-        msg['To'] = EMAIL_TO
-        smtp = smtplib.SMTP(EMAIL_SERVER)
-        smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
-        smtp.quit()
-        sensor.sent_alert = True
-    sensor.failures = 0
-    sensor.alert_sent = False
-
+      logger.warn('Removing sensor ' + sensor.mac + ' from sensors list due to disconnection')
+      sensor.temp_job_id.remove()
+      del self.temp_sensors[sensor.mac]
+      
     self.update_current_temp()
 
   def update_current_temp(self):

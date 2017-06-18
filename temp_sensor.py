@@ -1,18 +1,20 @@
-import struct, time, logging
+import struct, time, logging, threading
 import dbus
 
-from bluepy.btle import Scanner, DefaultDelegate, Peripheral
+from bluepy.btle import Scanner, DefaultDelegate, Peripheral, BTLEException
 from bluepy import btle
 
 logger = logging.getLogger('heating')
 
 class TempSensor(object):
-  def __init__(self, mac, addr_type):
-    self.mac = mac
+  _scanning_lock = threading.Lock()
+
+  def __init__(self, peripheral):
+    self.mac = peripheral.addr
     self.sent_alert = False
     self.amb_temp = None
     self.temp_job_id = None
-    self.peripheral = Peripheral(self.mac, addr_type)
+    self.peripheral = Peripheral(peripheral)
     self.characteristics = {}
 
   def connect(self):
@@ -32,7 +34,11 @@ class TempSensor(object):
     if not uuid in self.characteristics:
       raise Exception('UUID ' + str(uuid) + ' not found on device ' + self.mac)
 
-    self.characteristics[uuid].write(data)
+    try:
+      self.characteristics[uuid].write(data)
+    except BTLEException as e:
+      logger.warn(self.mac + ' disconnected. Try to reconnect.')
+      raise DisconnectedException(e.message)
 
   def _read_uuid(self, uuid):
     if not uuid in self.characteristics:
@@ -45,12 +51,16 @@ class TempSensor(object):
     return self.characteristics[uuid].read()
 
   @staticmethod
-  def find_temp_sensors():
+  def find_temp_sensors(sensors):
+    TempSensor._scanning_lock.acquire()
     logger.debug('Scanning for devices')
     scanner = Scanner().withDelegate(ScanDelegate())
     devices = scanner.scan(10.0)
-    sensors = {}
+    if sensors is None:
+      sensors = {}
     for device in devices:
+      if device.addr in sensors:
+        continue
       name = ''
       if device.getValueText(9):
         name = device.getValueText(9)
@@ -59,12 +69,13 @@ class TempSensor(object):
       logger.debug('Device name: ' + name)
       if 'SensorTag' in name:
         logger.info('Found SensorTag with address: ' + device.addr)
-        sensors[device.addr] = SensorTag(device.addr, device.addrType)
+        sensors[device.addr] = SensorTag(device)
       elif 'MetaWear' in name:
         logger.info('Found MetaWear with address: ' + device.addr)
-        sensors[device.addr] = MetaWear(device.addr, device.addrType)
+        sensors[device.addr] = MetaWear(device)
+    TempSensor._scanning_lock.release()
     if len(sensors) == 0:
-      raise Exception('No sensors found!')
+      raise NoTagsFoundException('No sensors found!')
     return sensors
 
 class ScanDelegate(DefaultDelegate):
@@ -75,8 +86,8 @@ class ScanDelegate(DefaultDelegate):
     pass
 
 class SensorTag(TempSensor):
-  def __init__(self, mac, addr_type):
-    TempSensor.__init__(self, mac, addr_type)
+  def __init__(self, peripheral):
+    TempSensor.__init__(self, peripheral)
 
   def get_ambient_temp(self):
     tAmb = 0
@@ -118,8 +129,8 @@ class SensorTag(TempSensor):
     self.amb_temp = tAmb
 
 class MetaWear(TempSensor):
-  def __init__(self, mac, addr_type):
-    TempSensor.__init__(self, mac, addr_type)
+  def __init__(self, peripheral):
+    TempSensor.__init__(self, peripheral)
 
   def get_ambient_temp(self):
     self.connect()
@@ -161,6 +172,6 @@ class MetaWear(TempSensor):
 class NoTagsFoundException(Exception):
   pass
 
-class NoTemperatureException(Exception):
+class DisconnectedException(Exception):
   pass
 
