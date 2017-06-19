@@ -73,6 +73,7 @@ class TempSensor(object):
       elif 'MetaWear' in name:
         logger.info('Found MetaWear with address: ' + device.addr)
         sensors[device.addr] = MetaWear(device)
+    logger.debug('Finished scanning for devices')
     TempSensor._scanning_lock.release()
     if len(sensors) == 0:
       raise NoTagsFoundException('No sensors found!')
@@ -93,6 +94,7 @@ class SensorTag(TempSensor):
     tAmb = 0
     failures = 0
     while tAmb == 0 and failures < 4:
+      try:
         #Turn red LED on
         self._write_uuid('f000aa65-0451-4000-b000-000000000000', '\x01')
         self._write_uuid('f000aa66-0451-4000-b000-000000000000', '\x01')
@@ -121,6 +123,9 @@ class SensorTag(TempSensor):
           failures += 1
         else:
           failures = 0
+
+      except DisconnectedException as e:
+        raise e
 
     if tAmb == 0:
       self.amb_temp = None
