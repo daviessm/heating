@@ -214,7 +214,7 @@ class Heating(object):
       logger.warn('Removing sensor ' + sensor.mac + ' from sensors list due to disconnection')
       sensor.temp_job_id.remove()
       del self.temp_sensors[sensor.mac]
-      
+
     self.update_current_temp()
 
   def update_current_temp(self):

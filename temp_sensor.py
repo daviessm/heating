@@ -125,7 +125,7 @@ class SensorTag(TempSensor):
           failures = 0
 
       except DisconnectedException as e:
-        raise e
+        raise NoTemperatureException(e.message)
 
     if tAmb == 0:
       self.amb_temp = None
@@ -142,31 +142,35 @@ class MetaWear(TempSensor):
     tAmb = 0
     failures = 0
     while tAmb == 0 and failures < 4:
-      #Turn red LED on
-      self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x02\x03\x01\x02\x1f\x1f\x00\x00\xd0\x07\x00\x00\xd0\x07\x00\x00\xff')
-      self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x02\x01\x02')
+      try:
+        #Turn red LED on
+        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x02\x03\x01\x02\x1f\x1f\x00\x00\xd0\x07\x00\x00\xd0\x07\x00\x00\xff')
+        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x02\x01\x02')
 
-      #Turn temperature sensor on
-      self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x04\x81\x01')
+        #Turn temperature sensor on
+        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x04\x81\x01')
 
-      time.sleep(0.1)
+        time.sleep(0.1)
 
-      #Turn red LED off
-      self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x02\x02\x01')
+        #Turn red LED off
+        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x02\x02\x01')
 
-      #Wait for reading
-      count = 0
-      while tAmb == 0 and count < 8:
-        count += 1
-        time.sleep(0.2)
-        result = self._read_uuid('326a9006-85cb-9195-d9dd-464cfbbae75a')
-        (rawTamb,) = struct.unpack('<xxxh', str(result))
-        tAmb = rawTamb / 8.0
+        #Wait for reading
+        count = 0
+        while tAmb == 0 and count < 8:
+          count += 1
+          time.sleep(0.2)
+          result = self._read_uuid('326a9006-85cb-9195-d9dd-464cfbbae75a')
+          (rawTamb,) = struct.unpack('<xxxh', str(result))
+          tAmb = rawTamb / 8.0
 
-      if count == 8:
-        failures += 1
-      else:
-        failures = 0
+        if count == 8:
+          failures += 1
+        else:
+          failures = 0
+
+      except DisconnectedException as e:
+        raise NoTemperatureException(e.message)
 
     if tAmb == 0:
       self.amb_temp = None
