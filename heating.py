@@ -340,6 +340,7 @@ class Heating(object):
     if current_temp < MINIMUM_TEMP:
       #If we're below the minimum allowed temperature, turn on at full blast.
       logger.info('Temperature is below minimum, turning on')
+      self.desired_temp = str(MINIMUM_TEMP)
       self.heating_on(PROPORTIONAL_HEATING_INTERVAL)
 
     elif self.events is not None:
@@ -384,15 +385,10 @@ class Heating(object):
           have_temp_event = True
           break
 
-        next_time =     self.events[index]['start_date']
-        next_time_end = self.events[index]['end_date']
-        next_temp =     self.events[index]['desired_temp']
-
-        if self.events is None or \
-            (next_time     > pytz.utc.localize(datetime.datetime.utcnow()) and \
-             next_time_end > pytz.utc.localize(datetime.datetime.utcnow())) or \
-            (not have_temp_event and not forced_on):
-          self.desired_temp = str(MINIMUM_TEMP)
+    if have_temp_event:
+      next_time =     self.events[index]['start_date']
+      next_time_end = self.events[index]['end_date']
+      next_temp =     self.events[index]['desired_temp']
 
       logger.debug('Processing data: ' + str(next_time.astimezone(LOCAL_TIMEZONE)) + \
         ' to ' + str(next_time_end.astimezone(LOCAL_TIMEZONE)) + ', ' + str(next_temp))
@@ -502,13 +498,15 @@ class Heating(object):
                   logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +\
                                '. Now due off at ' + str(new_time_due_off.astimezone(LOCAL_TIMEZONE)))
 
-    else:
+    elif have_preheat:
       #If we don't have an event yet, warn and ensure relay is off
-      logger.warn('No next event available.')
+      logger.info('Preheat but no normal event available.')
       if self.relay.one_status(1) == 1:
         logger.debug('Heating off')
         self.heating_off(0)
-      elif self.relay.one_status(2) == 1:
+    else:
+      logger.info('No events available,')
+      if self.relay.one_status(2) == 1:
         logger.debug('Preheat off')
         self.preheat_off()
 
