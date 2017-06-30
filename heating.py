@@ -106,28 +106,18 @@ class Heating(object):
       self.sched.start()
     except Exception as e:
       logger.error('Error in scheduler: ' + str(e))
-      for mac, sensor in self.temp_sensors.iteritems():
-        try:
-          sensor.tag._backend.stop()
-        except Exception as e1:
-          pass
       self.http_server.shutdown()
       self.sched.shutdown(wait = False)
 
   def scheduler_listener(self, event):
-    pass
-    #if event.exception is not None:
-    #  logger.error('Error in scheduled event: ' + str(event))
-    #  logger.debug(type(event.exception))
-    #  if not isinstance(event.exception, NoTemperatureException):
-    #    logger.error('Killing all the things')
-    #    for mac, sensor in self.temp_sensors.iteritems():
-    #      try:
-    #        sensor.tag._backend.stop()
-    #      except Exception as e1:
-    #        pass
-    #    self.http_server.shutdown()
-    #    self.sched.shutdown(wait = False)
+    if event.exception is not None:
+      logger.error('Error in scheduled event: ' + str(event))
+      logger.debug(type(event.exception))
+      if not isinstance(event.exception, NoTemperatureException):
+        logger.error('Killing all the things')
+        self.http_server.shutdown()
+        self.sched.shutdown(wait = False)
+        exit(1)
 
   def find_temp_sensors(self):
     self.temp_sensors = TempSensor.find_temp_sensors(self.temp_sensors)
@@ -142,28 +132,40 @@ class Heating(object):
     self.time_on = pytz.utc.localize(datetime.datetime.utcnow())
     self.time_off = None
     self.proportional_time = proportion
+    logger.debug('Getting relay lock')
     self.relay_lock.acquire()
+    logger.debug('Got relay lock')
     self.relay.one_on(1)
+    logger.debug('Releasing relay lock')
     self.relay_lock.release()
     self.set_heating_trigger(proportion, 1)
 
   def heating_off(self, proportion):
     self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
     self.time_on = None
+    logger.debug('Getting relay lock')
     self.relay_lock.acquire()
+    logger.debug('Got relay lock')
     self.relay.one_off(1)
+    logger.debug('Releasing relay lock')
     self.relay_lock.release()
     self.set_heating_trigger(proportion, 0)
 
   def preheat_on(self, time_off):
+    logger.debug('Getting relay lock')
     self.relay_lock.acquire()
+    logger.debug('Got relay lock')
     self.relay.one_on(2)
+    logger.debug('Releasing relay lock')
     self.relay_lock.release()
     self.set_preheat_trigger(time_off)
 
   def preheat_off(self):
+    logger.debug('Getting relay lock')
     self.relay_lock.acquire()
+    logger.debug('Got relay lock')
     self.relay.one_off(2)
+    logger.debug('Releasing relay lock')
     self.relay_lock.release()
 
   def check_relay_states(self):
@@ -313,6 +315,7 @@ class Heating(object):
     logger.info('Getting new outside temperature')
     darksky_url = 'https://api.darksky.net/forecast/' + self.darksky_details['api_key'] + '/' + self.darksky_details['latlong'] + '?exclude=[minutely,hourly,daily]&units=si'
     data = json.loads(urllib.urlopen(darksky_url).read())
+    logger.debug(str(data))
 
     if data['currently']:
       if data['currently']['apparentTemperature']:
