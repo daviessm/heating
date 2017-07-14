@@ -113,7 +113,7 @@ class Heating(object):
     if event.exception is not None:
       logger.error('Error in scheduled event: ' + str(event))
       logger.debug(type(event.exception))
-      if not isinstance(event.exception, NoTemperatureException):
+      if not isinstance(event.exception, NoTemperatureException) and not isinstance(event.exception, NoTagsFoundException):
         logger.error('Killing all the things')
         self.http_server.shutdown()
         self.sched.shutdown(wait = False)
@@ -501,17 +501,20 @@ class Heating(object):
                   logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +\
                                '. Now due off at ' + str(new_time_due_off.astimezone(LOCAL_TIMEZONE)))
 
-    elif have_preheat:
-      #If we don't have an event yet, warn and ensure relay is off
-      logger.info('Preheat but no normal event available.')
-      if self.relay.one_status(1) == 1:
-        logger.debug('Heating off')
-        self.heating_off(0)
     else:
-      logger.info('No events available,')
-      if self.relay.one_status(2) == 1:
-        logger.debug('Preheat off')
-        self.preheat_off()
+      self.desired_temp = str(MINIMUM_TEMP)
+      if have_preheat:
+        #If we don't have an event yet, warn and ensure relay is off
+        logger.info('Preheat but no normal event available.')
+        if self.relay.one_status(1) == 1:
+          logger.debug('Heating off')
+          self.heating_off(0)
+      else:
+        self.desired_temp = str(MINIMUM_TEMP)
+        logger.info('No events available,')
+        if self.relay.one_status(2) == 1:
+          logger.debug('Preheat off')
+          self.preheat_off()
 
     self.check_relay_states()
     self.processing_lock.release()
