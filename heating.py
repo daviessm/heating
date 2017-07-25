@@ -3,7 +3,7 @@ import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uui
 import logging, logging.config, logging.handlers
 from temp_sensor import TempSensor, DisconnectedException, NoTagsFoundException
 from relay import Relay
-from btrelay import BTRelay
+#from btrelay import BTRelay
 from usbrelay import USBRelay
 from httpserver import *
 
