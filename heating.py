@@ -1,5 +1,5 @@
 #!/usr/bin/python
-import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uuid, urllib, json
+import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uuid, urllib.request, urllib.parse, urllib.error, json
 import logging, logging.config, logging.handlers
 from temp_sensor import TempSensor, DisconnectedException, NoTagsFoundException
 from relay import Relay
@@ -121,7 +121,7 @@ class Heating(object):
 
   def find_temp_sensors(self):
     self.temp_sensors = TempSensor.find_temp_sensors(self.temp_sensors)
-    for sensor in self.temp_sensors.values():
+    for sensor in list(self.temp_sensors.values()):
       if sensor.temp_job_id is None:
         logger.info('Setting scheduler job for ' + sensor.mac)
         #Get a new temperature every minute
@@ -221,7 +221,7 @@ class Heating(object):
 
   def update_current_temp(self):
     temps = []
-    for mac, sensor in self.temp_sensors.iteritems():
+    for mac, sensor in self.temp_sensors.items():
       if sensor.amb_temp is not None:
         temps.append(sensor.amb_temp)
 
@@ -314,7 +314,7 @@ class Heating(object):
   def update_outside_temperature(self):
     logger.info('Getting new outside temperature')
     darksky_url = 'https://api.darksky.net/forecast/' + self.darksky_details['api_key'] + '/' + self.darksky_details['latlong'] + '?exclude=[minutely,hourly,daily]&units=si'
-    data = json.loads(urllib.urlopen(darksky_url).read())
+    data = json.loads(urllib.request.urlopen(darksky_url).read())
     logger.debug(str(data))
 
     if data['currently']:
@@ -547,7 +547,7 @@ class Heating(object):
     return credentials
 
   def get_darksky_details(self):
-    details = json.loads(urllib.urlopen('darksky_details.json').read())
+    details = json.loads(urllib.request.urlopen('darksky_details.json').read())
     logger.debug('DarkSky details: ' + str(details))
     return details
 
@@ -573,7 +573,7 @@ if __name__ == '__main__':
     smtp.quit()
 
     if heating.temp_sensors:
-      for mac, sensor in heating.temp_sensors.iteritems():
+      for mac, sensor in heating.temp_sensors.items():
         try:
           sensor.tag._backend.stop()
         except Exception as e1:

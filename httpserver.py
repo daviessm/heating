@@ -1,7 +1,7 @@
-import httplib2, logging, urlparse, pytz, datetime
+import httplib2, logging, urllib.parse, pytz, datetime
 
-from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
-from SocketServer import ThreadingMixIn
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 
 logger = logging.getLogger('heating')
 
@@ -9,7 +9,7 @@ class HttpHandler(BaseHTTPRequestHandler):
   heating = None
 
   def do_GET(self):
-    parsed_path = urlparse.urlparse(self.path)
+    parsed_path = urllib.parse.urlparse(self.path)
     if '/current_temp/' in parsed_path.path:
       address = parsed_path.path[parsed_path.path.rfind('/') + 1:]
       if address in self.heating.temp_sensors:
@@ -23,7 +23,7 @@ class HttpHandler(BaseHTTPRequestHandler):
         self.send_error(404)
     elif '/current_temp' in parsed_path.path:
       response = ''
-      for mac, sensor in self.heating.temp_sensors.iteritems():
+      for mac, sensor in self.heating.temp_sensors.items():
         response += mac + '=' + str(self.heating.temp_sensors[mac].amb_temp) + '\n'
       logger.info('Web request for /current_temp, sending ' + response)
       self.send_response(200)
@@ -65,7 +65,7 @@ class HttpHandler(BaseHTTPRequestHandler):
     return
 
   def do_POST(self):
-    parsed_path = urlparse.urlparse(self.path)
+    parsed_path = urllib.parse.urlparse(self.path)
     if parsed_path.path == '/refresh/events':
       logger.info('Web request for /refresh/events')
       logger.debug('Request data: ' + str(str(self.headers).splitlines()))
