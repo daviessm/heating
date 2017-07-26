@@ -70,8 +70,8 @@ class HttpHandler(BaseHTTPRequestHandler):
       logger.info('Web request for /refresh/events')
       logger.debug('Request data: ' + str(str(self.headers).splitlines()))
       try:
-        if self.headers.getheader('X-Goog-Resource-State') != 'sync' and \
-            self.headers.getheader('X-Goog-Channel-ID') == self.heating.event_sync_id:
+        if self.headers.get('X-Goog-Resource-State') != 'sync' and \
+            self.headers.get('X-Goog-Channel-ID') == self.heating.event_sync_id:
           self.heating.get_next_event()
         self.send_response(204)
         self.end_headers()
