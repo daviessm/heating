@@ -547,7 +547,9 @@ class Heating(object):
     return credentials
 
   def get_darksky_details(self):
-    details = json.loads(urllib.request.urlopen('darksky_details.json').read())
+    with open('darksky_details.json') as json_data:
+      details = json.load(json_data)
+      json_data.close()
     logger.debug('DarkSky details: ' + str(details))
     return details
 
