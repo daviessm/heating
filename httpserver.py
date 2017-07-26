@@ -17,7 +17,7 @@ class HttpHandler(BaseHTTPRequestHandler):
         logger.info('Web request for ' + parsed_path.path + ', sending ' + response)
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(response)
+        self.wfile.write(bytes(response, 'UTF-8'))
       else:
         logger.info('Web request for ' + parsed_path.path + ', sending 404')
         self.send_error(404)
@@ -28,37 +28,37 @@ class HttpHandler(BaseHTTPRequestHandler):
       logger.info('Web request for /current_temp, sending ' + response)
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(response)
+      self.wfile.write(bytes(response, 'UTF-8'))
     elif parsed_path.path == '/desired_temp':
       logger.info('Web request for /desired_temp, sending ' + str(self.heating.desired_temp))
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(str(self.heating.desired_temp) + '\n')
+      self.wfile.write(bytes(str(self.heating.desired_temp) + '\n', 'UTF-8'))
     elif parsed_path.path == '/proportion':
       logger.info('Web request for /proportion, sending ' + str(self.heating.proportional_time))
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(str(self.heating.proportional_time) + '\n')
+      self.wfile.write(bytes(str(self.heating.proportional_time) + '\n', 'UTF-8'))
     elif parsed_path.path == '/heating_status':
       logger.info('Web request for /heating_status, sending ' + str(self.heating.relay.one_status(1)))
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(str(self.heating.relay.one_status(1)) + '\n')
+      self.wfile.write(bytes(str(self.heating.relay.one_status(1)) + '\n', 'UTF-8'))
     elif parsed_path.path == '/preheat_status':
       logger.info('Web request for /preheat_status, sending ' + str(self.heating.relay.one_status(2)))
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(str(self.heating.relay.one_status(2)) + '\n')
+      self.wfile.write(bytes(str(self.heating.relay.one_status(2)) + '\n', 'UTF-8'))
     elif parsed_path.path == '/outside_temp':
       logger.info('Web request for /outside_temp, sending ' + str(self.heating.outside_temp))
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(str(self.heating.outside_temp) + '\n')
+      self.wfile.write(bytes(str(self.heating.outside_temp) + '\n', 'UTF-8'))
     elif parsed_path.path == '/outside_apparent_temp':
       logger.info('Web request for /outside_apparent_temp, sending ' + str(self.heating.outside_apparent_temp))
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(str(self.heating.outside_apparent_temp) + '\n')
+      self.wfile.write(bytes(str(self.heating.outside_apparent_temp) + '\n', 'UTF-8'))
     else:
       logger.info('GET request for ' + parsed_path.path + ', ignoring')
       self.send_error(404)
