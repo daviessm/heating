@@ -313,8 +313,8 @@ class Heating(object):
 
   def update_outside_temperature(self):
     logger.info('Getting new outside temperature')
-    darksky_url = 'https://api.darksky.net/forecast/' + self.darksky_details['api_key'] + '/' + self.darksky_details['latlong'] + '?exclude=[minutely,hourly,daily]&units=si'
-    data = json.loads(urllib.request.urlopen(darksky_url).read())
+    with urllib.request.urlopen('https://api.darksky.net/forecast/' + self.darksky_details['api_key'] + '/' + self.darksky_details['latlong'] + '?exclude=[minutely,hourly,daily]&units=si') as darksky_url:
+      data = json.loads(darksky_url.read().decode())
     logger.debug(str(data))
 
     if data['currently']:
