@@ -13,6 +13,7 @@ from apiclient.errors import HttpError
 from email.mime.text import MIMEText
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.events import *
+from apscheduler.jobstores.base import JobLookupError
 
 import oauth2client
 from oauth2client import client
@@ -181,8 +182,12 @@ class Heating(object):
   def set_heating_trigger(self, proportion, on):
     self.proportional_time = proportion
     if self.heating_trigger is not None:
-      self.heating_trigger.remove()
+      try:
+        self.heating_trigger.remove()
+      except JobLookupError as e:
+        pass
       self.heating_trigger = None
+
     if on == 0:
       if proportion > 0:
         if self.time_off is None:
@@ -202,7 +207,10 @@ class Heating(object):
 
   def set_preheat_trigger(self, time_off):
     if self.preheat_trigger is not None:
-      self.preheat_trigger.remove()
+      try:
+        self.preheat_trigger.remove()
+      except JobLookupError as e:
+        pass
       self.preheat_trigger = None
     logger.info('Preheat off at ' + str(time_off.astimezone(LOCAL_TIMEZONE)))
     self.preheat_trigger = self.sched.add_job(\
@@ -214,7 +222,10 @@ class Heating(object):
       sensor.get_ambient_temp()
     except NoTemperatureException as e:
       logger.warn('Removing sensor ' + sensor.mac + ' from sensors list due to disconnection')
-      sensor.temp_job_id.remove()
+      try:
+        sensor.temp_job_id.remove()
+      except JobLookupError as e:
+        pass
       del self.temp_sensors[sensor.mac]
 
     self.update_current_temp()
@@ -293,7 +304,10 @@ class Heating(object):
         if counter == 1:
           #Set a schedule to get the one after this
           if self.event_trigger is not None:
-            self.event_trigger.remove()
+            try:
+              self.event_trigger.remove()
+            except JobLookupError as e:
+              pass
             self.event_trigger = None
 
           self.event_trigger = self.sched.add_job(self.get_next_event, \
