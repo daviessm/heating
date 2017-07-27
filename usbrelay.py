@@ -24,8 +24,7 @@ class USBRelay(Relay):
     self.all_off()
 
   def __sendmsg(self,data):
-    command = "".join(chr(n) for n in data)
-    self._hid_device.ctrl_transfer(0x21,0x09,0x0300,0x00,command,1000)
+    self._hid_device.ctrl_transfer(0x21,0x09,0x0300,0x00,bytes(data),1000)
 
   def all_status(self):
     return self._status
