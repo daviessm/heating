@@ -27,28 +27,32 @@ class TempSensor(object):
     pass
 
   def _write_uuid(self, uuid, data):
-    if not uuid in self.characteristics:
-      self.characteristics[uuid] = self.peripheral.getCharacteristics(uuid=uuid)[0]
-
-    #If there's still no characteristic, error
-    if not uuid in self.characteristics:
-      raise Exception('UUID ' + str(uuid) + ' not found on device ' + self.mac)
-
     try:
+      if not uuid in self.characteristics:
+        self.characteristics[uuid] = self.peripheral.getCharacteristics(uuid=uuid)[0]
+
+      #If there's still no characteristic, error
+      if not uuid in self.characteristics:
+        raise Exception('UUID ' + str(uuid) + ' not found on device ' + self.mac)
+
       self.characteristics[uuid].write(data)
     except BTLEException as e:
       logger.warn(self.mac + ' disconnected. Try to reconnect.')
       raise DisconnectedException(e.message)
 
   def _read_uuid(self, uuid):
-    if not uuid in self.characteristics:
-      self.characteristics[uuid] = self.peripheral.getCharacteristics(uuid=uuid)[0]
+    try:
+      if not uuid in self.characteristics:
+        self.characteristics[uuid] = self.peripheral.getCharacteristics(uuid=uuid)[0]
 
-    #If there's still no characteristic, error
-    if not uuid in self.characteristics:
-      raise Exception('UUID ' + str(uuid) + ' not found on device ' + self.mac)
+      #If there's still no characteristic, error
+      if not uuid in self.characteristics:
+        raise Exception('UUID ' + str(uuid) + ' not found on device ' + self.mac)
 
-    return self.characteristics[uuid].read()
+      return self.characteristics[uuid].read()
+    except BTLEException as e:
+      logger.warn(self.mac + ' disconnected. Try to reconnect.')
+      raise DisconnectedException(e.message)
 
   @staticmethod
   def find_temp_sensors(sensors):
