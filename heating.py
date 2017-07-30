@@ -1,9 +1,9 @@
 #!/usr/bin/python
-import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uuid, urllib, json
+import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uuid, urllib.request, urllib.parse, urllib.error, json
 import logging, logging.config, logging.handlers
 from temp_sensor import TempSensor, DisconnectedException, NoTagsFoundException
 from relay import Relay
-from btrelay import BTRelay
+#from btrelay import BTRelay
 from usbrelay import USBRelay
 from httpserver import *
 
@@ -13,6 +13,7 @@ from apiclient.errors import HttpError
 from email.mime.text import MIMEText
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.events import *
+from apscheduler.jobstores.base import JobLookupError
 
 import oauth2client
 from oauth2client import client
@@ -121,7 +122,7 @@ class Heating(object):
 
   def find_temp_sensors(self):
     self.temp_sensors = TempSensor.find_temp_sensors(self.temp_sensors)
-    for sensor in self.temp_sensors.values():
+    for sensor in list(self.temp_sensors.values()):
       if sensor.temp_job_id is None:
         logger.info('Setting scheduler job for ' + sensor.mac)
         #Get a new temperature every minute
@@ -181,8 +182,12 @@ class Heating(object):
   def set_heating_trigger(self, proportion, on):
     self.proportional_time = proportion
     if self.heating_trigger is not None:
-      self.heating_trigger.remove()
+      try:
+        self.heating_trigger.remove()
+      except JobLookupError as e:
+        pass
       self.heating_trigger = None
+
     if on == 0:
       if proportion > 0:
         if self.time_off is None:
@@ -202,7 +207,10 @@ class Heating(object):
 
   def set_preheat_trigger(self, time_off):
     if self.preheat_trigger is not None:
-      self.preheat_trigger.remove()
+      try:
+        self.preheat_trigger.remove()
+      except JobLookupError as e:
+        pass
       self.preheat_trigger = None
     logger.info('Preheat off at ' + str(time_off.astimezone(LOCAL_TIMEZONE)))
     self.preheat_trigger = self.sched.add_job(\
@@ -214,14 +222,17 @@ class Heating(object):
       sensor.get_ambient_temp()
     except NoTemperatureException as e:
       logger.warn('Removing sensor ' + sensor.mac + ' from sensors list due to disconnection')
-      sensor.temp_job_id.remove()
+      try:
+        sensor.temp_job_id.remove()
+      except JobLookupError as e:
+        pass
       del self.temp_sensors[sensor.mac]
 
     self.update_current_temp()
 
   def update_current_temp(self):
     temps = []
-    for mac, sensor in self.temp_sensors.iteritems():
+    for mac, sensor in self.temp_sensors.items():
       if sensor.amb_temp is not None:
         temps.append(sensor.amb_temp)
 
@@ -293,7 +304,10 @@ class Heating(object):
         if counter == 1:
           #Set a schedule to get the one after this
           if self.event_trigger is not None:
-            self.event_trigger.remove()
+            try:
+              self.event_trigger.remove()
+            except JobLookupError as e:
+              pass
             self.event_trigger = None
 
           self.event_trigger = self.sched.add_job(self.get_next_event, \
@@ -313,8 +327,8 @@ class Heating(object):
 
   def update_outside_temperature(self):
     logger.info('Getting new outside temperature')
-    darksky_url = 'https://api.darksky.net/forecast/' + self.darksky_details['api_key'] + '/' + self.darksky_details['latlong'] + '?exclude=[minutely,hourly,daily]&units=si'
-    data = json.loads(urllib.urlopen(darksky_url).read())
+    with urllib.request.urlopen('https://api.darksky.net/forecast/' + self.darksky_details['api_key'] + '/' + self.darksky_details['latlong'] + '?exclude=[minutely,hourly,daily]&units=si') as darksky_url:
+      data = json.loads(darksky_url.read().decode())
     logger.debug(str(data))
 
     if data['currently']:
@@ -547,7 +561,9 @@ class Heating(object):
     return credentials
 
   def get_darksky_details(self):
-    details = json.loads(urllib.urlopen('darksky_details.json').read())
+    with open('darksky_details.json') as json_data:
+      details = json.load(json_data)
+      json_data.close()
     logger.debug('DarkSky details: ' + str(details))
     return details
 
@@ -573,7 +589,7 @@ if __name__ == '__main__':
     smtp.quit()
 
     if heating.temp_sensors:
-      for mac, sensor in heating.temp_sensors.iteritems():
+      for mac, sensor in heating.temp_sensors.items():
         try:
           sensor.tag._backend.stop()
         except Exception as e1:

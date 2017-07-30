@@ -59,28 +59,32 @@ class TempSensor(object):
     TempSensor._scanning_lock.acquire()
     logger.debug('Scanning for devices')
     scanner = Scanner().withDelegate(ScanDelegate())
-    devices = scanner.scan(10.0)
-    if sensors is None:
-      sensors = {}
-    for device in devices:
-      if device.addr in sensors:
-        continue
-      name = ''
-      if device.getValueText(9):
-        name = device.getValueText(9)
-      elif device.getValueText(8):
-        name = device.getValueText(8)
-      logger.debug('Device name: ' + name)
-      if 'SensorTag' in name:
-        logger.info('Found SensorTag with address: ' + device.addr)
-        sensors[device.addr] = SensorTag(device)
-      elif 'MetaWear' in name:
-        logger.info('Found MetaWear with address: ' + device.addr)
-        sensors[device.addr] = MetaWear(device)
-    logger.debug('Finished scanning for devices')
-    TempSensor._scanning_lock.release()
-    if len(sensors) == 0:
-      raise NoTagsFoundException('No sensors found!')
+    try:
+      devices = scanner.scan(10.0)
+      if sensors is None:
+        sensors = {}
+      for device in devices:
+        if device.addr in sensors:
+          continue
+        name = ''
+        if device.getValueText(9):
+          name = device.getValueText(9)
+        elif device.getValueText(8):
+          name = device.getValueText(8)
+        logger.debug('Device name: ' + name)
+        if 'SensorTag' in name:
+          logger.info('Found SensorTag with address: ' + device.addr)
+          sensors[device.addr] = SensorTag(device)
+        elif 'MetaWear' in name:
+          logger.info('Found MetaWear with address: ' + device.addr)
+          sensors[device.addr] = MetaWear(device)
+      logger.debug('Finished scanning for devices')
+      TempSensor._scanning_lock.release()
+      if len(sensors) == 0:
+        raise NoTagsFoundException('No sensors found!')
+    except BTLEException as e:
+      logger.warn('Got exception ' + e.message)
+      TempSensor._scanning_lock.release()
     return sensors
 
 class ScanDelegate(DefaultDelegate):
@@ -100,17 +104,17 @@ class SensorTag(TempSensor):
     while tAmb == 0 and failures < 4:
       try:
         #Turn red LED on
-        self._write_uuid('f000aa65-0451-4000-b000-000000000000', '\x01')
-        self._write_uuid('f000aa66-0451-4000-b000-000000000000', '\x01')
+        self._write_uuid('f000aa65-0451-4000-b000-000000000000', b'\x01')
+        self._write_uuid('f000aa66-0451-4000-b000-000000000000', b'\x01')
 
         #Turn temperature sensor on
-        self._write_uuid('f000aa02-0451-4000-b000-000000000000', '\x01')
+        self._write_uuid('f000aa02-0451-4000-b000-000000000000', b'\x01')
 
         time.sleep(0.1)
 
         #Turn red LED off
-        self._write_uuid('f000aa65-0451-4000-b000-000000000000', '\x00')
-        self._write_uuid('f000aa66-0451-4000-b000-000000000000', '\x00')
+        self._write_uuid('f000aa65-0451-4000-b000-000000000000', b'\x00')
+        self._write_uuid('f000aa66-0451-4000-b000-000000000000', b'\x00')
 
         #Wait for reading
         count = 0
@@ -122,7 +126,7 @@ class SensorTag(TempSensor):
           tAmb = rawTamb / 128.0
 
         #Turn temperature sensor off
-        self._write_uuid('f000aa02-0451-4000-b000-000000000000', '\x00')
+        self._write_uuid('f000aa02-0451-4000-b000-000000000000', b'\x00')
         if count == 8:
           failures += 1
         else:
@@ -148,16 +152,16 @@ class MetaWear(TempSensor):
     while tAmb == 0 and failures < 4:
       try:
         #Turn red LED on
-        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x02\x03\x01\x02\x1f\x1f\x00\x00\xd0\x07\x00\x00\xd0\x07\x00\x00\xff')
-        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x02\x01\x02')
+        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', b'\x02\x03\x01\x02\x1f\x1f\x00\x00\xd0\x07\x00\x00\xd0\x07\x00\x00\xff')
+        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', b'\x02\x01\x02')
 
         #Turn temperature sensor on
-        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x04\x81\x01')
+        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', b'\x04\x81\x01')
 
         time.sleep(0.1)
 
         #Turn red LED off
-        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', '\x02\x02\x01')
+        self._write_uuid('326a9001-85cb-9195-d9dd-464cfbbae75a', b'\x02\x02\x01')
 
         #Wait for reading
         count = 0
