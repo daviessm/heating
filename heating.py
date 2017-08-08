@@ -326,18 +326,21 @@ class Heating(object):
     self.process()
 
   def update_outside_temperature(self):
-    logger.info('Getting new outside temperature')
-    with urllib.request.urlopen('https://api.darksky.net/forecast/' + self.darksky_details['api_key'] + '/' + self.darksky_details['latlong'] + '?exclude=[minutely,hourly,daily]&units=si') as darksky_url:
-      data = json.loads(darksky_url.read().decode())
-    logger.debug(str(data))
+    try:
+      logger.info('Getting new outside temperature')
+      with urllib.request.urlopen('https://api.darksky.net/forecast/' + self.darksky_details['api_key'] + '/' + self.darksky_details['latlong'] + '?exclude=[minutely,hourly,daily]&units=si') as darksky_url:
+        data = json.loads(darksky_url.read().decode())
+      logger.debug(str(data))
 
-    if data['currently']:
-      if data['currently']['apparentTemperature']:
-        self.outside_apparent_temp = data['currently']['apparentTemperature']
-        logger.info('Got outside apparent temperature: ' + str(self.outside_apparent_temp))
-      if data['currently']['temperature']:
-        self.outside_temp = data['currently']['temperature']
-        logger.info('Got outside temperature: ' + str(self.outside_temp))
+      if data['currently']:
+        if data['currently']['apparentTemperature']:
+          self.outside_apparent_temp = data['currently']['apparentTemperature']
+          logger.info('Got outside apparent temperature: ' + str(self.outside_apparent_temp))
+        if data['currently']['temperature']:
+          self.outside_temp = data['currently']['temperature']
+          logger.info('Got outside temperature: ' + str(self.outside_temp))
+    except Exception as e:
+      pass
 
   def process(self):
     logger.debug('Processing')
