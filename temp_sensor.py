@@ -83,6 +83,7 @@ class TempSensor(object):
       if len(sensors) == 0:
         raise NoTagsFoundException('No sensors found!')
     except BTLEException as e:
+      scanner.stop()
       logger.warn('Got exception ' + e.message)
       TempSensor._scanning_lock.release()
     return sensors
