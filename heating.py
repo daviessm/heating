@@ -111,14 +111,15 @@ class Heating(object):
       self.sched.shutdown(wait = False)
 
   def scheduler_listener(self, event):
-    if event.exception is not None:
+    if event.exception is not None or event.code == EVENT_JOB_MAX_INSTANCES:
       logger.error('Error in scheduled event: ' + str(event))
       logger.debug(type(event.exception))
       if not isinstance(event.exception, NoTemperatureException) and not isinstance(event.exception, NoTagsFoundException):
         logger.error('Killing all the things')
-        self.http_server.shutdown()
-        self.sched.shutdown(wait = False)
-        exit(1)
+        raise Exception(str(event))
+        #self.http_server.shutdown()
+        #self.sched.shutdown(wait = False)
+        #exit(1)
 
   def find_temp_sensors(self):
     self.temp_sensors = TempSensor.find_temp_sensors(self.temp_sensors)
@@ -127,7 +128,8 @@ class Heating(object):
         logger.info('Setting scheduler job for ' + sensor.mac)
         #Get a new temperature every minute
         sensor.temp_job_id = self.sched.add_job(self.get_temperature, trigger = 'cron', \
-          next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), args = (sensor,), second = 0)
+          next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), args = (sensor,), second = 0, \
+          name = sensor.mac + ' temperature job')
 
   def heating_on(self, proportion):
     self.time_on = pytz.utc.localize(datetime.datetime.utcnow())
