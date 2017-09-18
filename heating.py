@@ -4,7 +4,7 @@ import logging, logging.config, logging.handlers
 from temp_sensor import TempSensor, DisconnectedException, NoTagsFoundException
 from relay import Relay
 #from btrelay import BTRelay
-from usbrelay import USBRelay
+from usbmultiplerelays import USBMultipleRelays
 from httpserver import *
 
 from dateutil import parser
@@ -81,7 +81,8 @@ class Heating(object):
       pass
     logger.debug('Searching for relay')
     #self.relay = BTRelay.find_relay()
-    self.relay = USBRelay.find_relay()
+    #self.relay = USBRelay.find_relay()
+    self.relay = USBMultipleRelays.find_relays()
 
     logger.debug('Creating scheduler jobs')
     #Get new events every X minutes
