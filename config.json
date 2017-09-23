@@ -1,0 +1,24 @@
+{
+	"relays": {
+		"heating": [1, 2, 2],
+		"preheat": [1, 2, 1]
+	},
+	"heating_settings": {
+		"update_temperature_interval_seconds": 60,
+		"proportional_heating_interval_minutes": 20,
+		"minimum_active_period_minutes": 8,
+		"minutes_per_degree": 20,
+		"minimum_temperature": 9,
+		"effect_delay_minutes": 8
+	},
+	"calendar_settings": {
+		"calendar_id": "fkjecfkial36lojtvjlua77qio@group.calendar.google.com",
+		"calendar_timeout_seconds": 30,
+		"update_calendar_interval_hours": 6
+	},
+	"email_settings": {
+		"from": "root@steev.me.uk",
+		"to": "root@steev.me.uk",
+		"server": "localhost"
+	}
+}

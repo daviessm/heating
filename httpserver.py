@@ -40,15 +40,21 @@ class HttpHandler(BaseHTTPRequestHandler):
       self.end_headers()
       self.wfile.write(bytes(str(self.heating.proportional_time) + '\n', 'UTF-8'))
     elif parsed_path.path == '/heating_status':
-      logger.info('Web request for /heating_status, sending ' + str(self.heating.relay.one_status(1)))
+      status_num = '0'
+      if self.heating.relays_heating._status:
+        status_num = '1'
+      logger.info('Web request for /heating_status, sending ' + status_num)
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(bytes(str(self.heating.relay.one_status(1)) + '\n', 'UTF-8'))
+      self.wfile.write(bytes(status_num + '\n', 'UTF-8'))
     elif parsed_path.path == '/preheat_status':
-      logger.info('Web request for /preheat_status, sending ' + str(self.heating.relay.one_status(2)))
+      status_num = '0'
+      if self.heating.relays_preheat._status:
+        status_num = '1'
+      logger.info('Web request for /preheat_status, sending ' + status_num)
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(bytes(str(self.heating.relay.one_status(2)) + '\n', 'UTF-8'))
+      self.wfile.write(bytes(status_num + '\n', 'UTF-8'))
     elif parsed_path.path == '/outside_temp':
       logger.info('Web request for /outside_temp, sending ' + str(self.heating.outside_temp))
       self.send_response(200)

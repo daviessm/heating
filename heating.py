@@ -1,7 +1,7 @@
 #!/usr/bin/python
 import datetime, sys, threading, os, time, inspect, pytz, argparse, smtplib, uuid, urllib.request, urllib.parse, urllib.error, json
 import logging, logging.config, logging.handlers
-from temp_sensor import TempSensor, DisconnectedException, NoTagsFoundException
+from temp_sensor import TempSensor, DisconnectedException, NoTagsFoundException, NoTemperatureException
 from relay import Relay
 #from btrelay import BTRelay
 from usbmultiplerelays import USBMultipleRelays
@@ -9,7 +9,7 @@ from httpserver import *
 
 from dateutil import parser
 from apiclient import discovery
-from apiclient.errors import HttpError
+from googleapiclient.errors import HttpError
 from email.mime.text import MIMEText
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.events import *
@@ -21,26 +21,18 @@ from oauth2client import tools
 
 from bluepy import btle
 
-UPDATE_CALENDAR_INTERVAL=6 #hours
-UPDATE_TEMPERATURE_INTERVAL=60 #seconds
-PROPORTIONAL_HEATING_INTERVAL=20 # minutes
-MIN_ACTIVE_PERIOD=8
-EFFECT_DELAY=20 #minutes
-MINS_PER_DEGREE=25 #minutes
-MINIMUM_TEMP=9
-CALENDAR_ID='fkjecfkial36lojtvjlua77qio@group.calendar.google.com'
-CALENDAR_TIMEOUT=30 #seconds
-EMAIL_FROM='root@steev.me.uk'
-EMAIL_TO=EMAIL_FROM
-EMAIL_SERVER='localhost'
-LOCAL_TIMEZONE=pytz.timezone('Europe/London')
+from tzlocal import get_localzone
 
 logging.config.fileConfig('logging.conf')
 logger = logging.getLogger('heating')
 
-
 class Heating(object):
   def __init__(self):
+    with open('config.json') as json_data:
+      self.config = json.load(json_data)
+      json_data.close()
+    logger.debug('Configuration: ' + str(self.config))
+
     self.processing_lock = threading.Lock()
     self.calendar_lock = threading.Lock()
     self.relay_lock = threading.Lock()
@@ -50,13 +42,17 @@ class Heating(object):
     self.event_trigger = None
     #Sensible defaults
     self.events = None
-    self.desired_temp = MINIMUM_TEMP
+    self.desired_temp = self.config['heating_settings']['minimum_temperature']
     self.current_temp = None
     self.proportional_time = 0
     self.time_on = None
     self.time_off = None
     self.event_sync_id = None
-    self.relay = None
+
+    self.relays = None
+    self.relays_heating = None
+    self.relays_preheat = None
+
     self.http_server = None
     self.temp_sensors = {}
     self.sched = None
@@ -79,15 +75,25 @@ class Heating(object):
       self.find_temp_sensors()
     except NoTagsFoundException as e:
       pass
+
     logger.debug('Searching for relay')
     #self.relay = BTRelay.find_relay()
     #self.relay = USBRelay.find_relay()
-    self.relay = USBMultipleRelays.find_relays()
+    self.relays = USBMultipleRelays.find_relays()
+    for relay in self.relays._relays:
+      if relay.port_numbers == tuple(self.config['relays']['heating']):
+        self.relays_heating = relay
+        logger.info('Found heating relay at ' + str(relay.port_numbers))
+      elif relay.port_numbers == tuple(self.config['relays']['preheat']):
+        self.relays_preheat = relay
+        logger.info('Found preheat relay at ' + str(relay.port_numbers))
+    if self.relays_heating is None:
+      raise Exception('No heating relay found')
 
     logger.debug('Creating scheduler jobs')
     #Get new events every X minutes
     self.sched.add_job(self.get_next_event, trigger = 'cron', \
-        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*/' + str(UPDATE_CALENDAR_INTERVAL), minute = 0)
+        next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*/' + str(self.config['calendar_settings']['update_calendar_interval_hours']), minute = 0)
 
     self.sched.add_job(self.update_outside_temperature, trigger = 'cron', \
         next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), hour = '*', minute = '*/15')
@@ -128,9 +134,9 @@ class Heating(object):
       if sensor.temp_job_id is None:
         logger.info('Setting scheduler job for ' + sensor.mac)
         #Get a new temperature every minute
-        sensor.temp_job_id = self.sched.add_job(self.get_temperature, trigger = 'cron', \
-          next_run_time = pytz.utc.localize(datetime.datetime.utcnow()), args = (sensor,), second = 0, \
-          name = sensor.mac + ' temperature job')
+        sensor.temp_job_id = self.sched.add_job(self.get_temperature, trigger = 'interval', \
+          start_date = datetime.datetime.now(), seconds = self.config['heating_settings']['update_temperature_interval_seconds'], \
+          name = sensor.mac + ' temperature job', args = (sensor,))
 
   def heating_on(self, proportion):
     self.time_on = pytz.utc.localize(datetime.datetime.utcnow())
@@ -139,10 +145,10 @@ class Heating(object):
     logger.debug('Getting relay lock')
     self.relay_lock.acquire()
     logger.debug('Got relay lock')
-    self.relay.one_on(1)
+    self.relays_heating.on()
     logger.debug('Releasing relay lock')
     self.relay_lock.release()
-    self.set_heating_trigger(proportion, 1)
+    self.set_heating_trigger(proportion, True)
 
   def heating_off(self, proportion):
     self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
@@ -150,16 +156,16 @@ class Heating(object):
     logger.debug('Getting relay lock')
     self.relay_lock.acquire()
     logger.debug('Got relay lock')
-    self.relay.one_off(1)
+    self.relays_heating.off()
     logger.debug('Releasing relay lock')
     self.relay_lock.release()
-    self.set_heating_trigger(proportion, 0)
+    self.set_heating_trigger(proportion, False)
 
   def preheat_on(self, time_off):
     logger.debug('Getting relay lock')
     self.relay_lock.acquire()
     logger.debug('Got relay lock')
-    self.relay.one_on(2)
+    self.relays_preheat.on()
     logger.debug('Releasing relay lock')
     self.relay_lock.release()
     self.set_preheat_trigger(time_off)
@@ -168,19 +174,19 @@ class Heating(object):
     logger.debug('Getting relay lock')
     self.relay_lock.acquire()
     logger.debug('Got relay lock')
-    self.relay.one_off(2)
+    self.relays_preheat.off()
     logger.debug('Releasing relay lock')
     self.relay_lock.release()
 
   def check_relay_states(self):
-    logger.debug('Checking states ' + str(self.relay.all_status()))
+    logger.debug('Checking states ' + str(self.relays.all_status()))
     iter = 0
-    for s in self.relay.all_status():
+    for s in self.relays.all_status():
       iter += 1
       if s == 0:
-        self.relay.one_off(iter)
+        self.relays.one_off(iter)
       else:
-        self.relay.one_on(iter)
+        self.relays.one_on(iter)
 
   def set_heating_trigger(self, proportion, on):
     self.proportional_time = proportion
@@ -191,22 +197,22 @@ class Heating(object):
         pass
       self.heating_trigger = None
 
-    if on == 0:
+    if on:
+      if proportion < self.config['heating_settings']['proportional_heating_interval_minutes']:
+        run_date = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
+        logger.info('New proportional time: ' + str(proportion) + '/' + str(self.config['heating_settings']['proportional_heating_interval_minutes']) +\
+          ' mins - will turn off at ' + str(run_date.astimezone(get_localzone())))
+        self.heating_trigger = self.sched.add_job(\
+          self.process, trigger='date', run_date=run_date, name='Proportional off at ' + str(run_date.astimezone(get_localzone())))
+    else:
       if proportion > 0:
         if self.time_off is None:
           self.time_off = pytz.utc.localize(datetime.datetime.utcnow())
-        run_date = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL - self.proportional_time) * 60)
-        logger.info('New proportional time: ' + str(proportion) + '/' + str(PROPORTIONAL_HEATING_INTERVAL) +\
-          ' mins - will turn on at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
+        run_date = self.time_off + datetime.timedelta(0,(self.config['heating_settings']['proportional_heating_interval_minutes'] - self.proportional_time) * 60)
+        logger.info('New proportional time: ' + str(proportion) + '/' + str(self.config['heating_settings']['proportional_heating_interval_minutes']) +\
+          ' mins - will turn on at ' + str(run_date.astimezone(get_localzone())))
         self.heating_trigger = self.sched.add_job(\
-          self.process, trigger='date', run_date=run_date, name='Proportional on at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
-    else:
-      if proportion < PROPORTIONAL_HEATING_INTERVAL:
-        run_date = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
-        logger.info('New proportional time: ' + str(proportion) + '/' + str(PROPORTIONAL_HEATING_INTERVAL) +\
-          ' mins - will turn off at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
-        self.heating_trigger = self.sched.add_job(\
-          self.process, trigger='date', run_date=run_date, name='Proportional off at ' + str(run_date.astimezone(LOCAL_TIMEZONE)))
+          self.process, trigger='date', run_date=run_date, name='Proportional on at ' + str(run_date.astimezone(get_localzone())))
 
   def set_preheat_trigger(self, time_off):
     if self.preheat_trigger is not None:
@@ -215,9 +221,9 @@ class Heating(object):
       except JobLookupError as e:
         pass
       self.preheat_trigger = None
-    logger.info('Preheat off at ' + str(time_off.astimezone(LOCAL_TIMEZONE)))
+    logger.info('Preheat off at ' + str(time_off.astimezone(get_localzone())))
     self.preheat_trigger = self.sched.add_job(\
-      self.process, trigger='date', run_date=time_off, name='Preheat off at ' + str(time_off.astimezone(LOCAL_TIMEZONE)))
+      self.process, trigger='date', run_date=time_off, name='Preheat off at ' + str(time_off.astimezone(get_localzone())))
 
 
   def get_temperature(self, sensor):
@@ -240,7 +246,7 @@ class Heating(object):
         temps.append(sensor.amb_temp)
 
     if not temps:
-      raise NoTemperatureException('No temperatures.')
+      raise NoTemperatureException()
     #self.current_temp = sum(temps) / float(len(temps))
     self.current_temp = min(temps)
     logger.info('Overall temperature is now ' + str(self.current_temp) + ' from ' + str(temps))
@@ -249,26 +255,26 @@ class Heating(object):
 
   def get_next_event(self):
     self.calendar_lock.acquire()
-    http = self.credentials.authorize(httplib2.Http(timeout=CALENDAR_TIMEOUT))
+    http = self.credentials.authorize(httplib2.Http(timeout=self.config['calendar_settings']['calendar_timeout_seconds']))
     service = discovery.build('calendar', 'v3', http=http)
 
     now = datetime.datetime.utcnow().isoformat() + 'Z'
     logger.debug('Getting the next event')
     try:
       eventsResult = service.events().list(
-        calendarId=CALENDAR_ID, timeMin=now, maxResults=3, singleEvents=True, orderBy='startTime').execute()
+        calendarId=self.config['calendar_settings']['calendar_id'], timeMin=now, maxResults=3, singleEvents=True, orderBy='startTime').execute()
       events = eventsResult.get('items', [])
       self.event_sync_id = str(uuid.uuid4())
       logger.debug('Sending request: ' + str({'id':self.event_sync_id, \
               'type':'web_hook', \
               'address':'https://www.steev.me.uk/heating/events', \
-              'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60*60))*1000 \
+              'expiration':(int(time.time())+(self.config['calendar_settings']['update_calendar_interval_hours']*60*60))*1000 \
              }))
-      hook_response = service.events().watch(calendarId=CALENDAR_ID, \
+      hook_response = service.events().watch(calendarId=self.config['calendar_settings']['calendar_id'], \
         body={'id':self.event_sync_id, \
               'type':'web_hook', \
               'address':'https://www.steev.me.uk/heating/events', \
-              'expiration':(int(time.time())+(UPDATE_CALENDAR_INTERVAL*60*60))*1000 \
+              'expiration':(int(time.time())+(self.config['calendar_settings']['update_calendar_interval_hours']*60*60))*1000 \
              })\
         .execute()
       if hook_response is not None:
@@ -301,8 +307,8 @@ class Heating(object):
           if event['summary'].lower() == 'preheat':
             desired_temp = 'Preheat'
 
-        logger.info('Event ' + str(counter) + ' is ' + str(start_date.astimezone(LOCAL_TIMEZONE)) + \
-          ' to ' + str(end_date.astimezone(LOCAL_TIMEZONE)) + ': ' + str(desired_temp))
+        logger.info('Event ' + str(counter) + ' is ' + str(start_date.astimezone(get_localzone())) + \
+          ' to ' + str(end_date.astimezone(get_localzone())) + ': ' + str(desired_temp))
         parsed_events.append({'start_date': start_date, 'end_date': end_date, 'desired_temp': desired_temp})
         if counter == 1:
           #Set a schedule to get the one after this
@@ -314,7 +320,7 @@ class Heating(object):
             self.event_trigger = None
 
           self.event_trigger = self.sched.add_job(self.get_next_event, \
-            trigger='date', run_date=end_date, name='Event end at ' + str(end_date.astimezone(LOCAL_TIMEZONE)))
+            trigger='date', run_date=end_date, name='Event end at ' + str(end_date.astimezone(get_localzone())))
 
           #Tell the processing that this is a new event so it resets the proportion to start again
           if self.events is None or start_date != self.events[0]['start_date'] or end_date != self.events[0]['end_date'] or desired_temp != self.events[0]['desired_temp']:
@@ -360,11 +366,11 @@ class Heating(object):
     forced_on = False
     have_preheat = False
 
-    if current_temp < MINIMUM_TEMP:
+    if current_temp < self.config['heating_settings']['minimum_temperature']:
       #If we're below the minimum allowed temperature, turn on at full blast.
       logger.info('Temperature is below minimum, turning on')
-      self.desired_temp = str(MINIMUM_TEMP)
-      self.heating_on(PROPORTIONAL_HEATING_INTERVAL)
+      self.desired_temp = str(self.config['heating_settings']['minimum_temperature'])
+      self.heating_on(self.config['heating_settings']['proportional_heating_interval_minutes'])
 
     elif self.events is not None:
       #Find preheat events
@@ -378,12 +384,12 @@ class Heating(object):
         if self.events[index]['desired_temp'] == 'Preheat':
           if self.events[index]['start_date'] < current_time and not self.events[index]['end_date'] < current_time:
             have_preheat = True
-            if self.relay.one_status(2) == 0:
+            if not(self.relays_preheat._status):
               logger.info('Preheat on')
               self.preheat_on(self.events[index]['end_date'])
             break
 
-      if (not have_preheat) and self.relay.one_status(2) == 1:
+      if (not have_preheat) and self.relays_preheat._status:
         self.preheat_off()
 
       #Find normal events
@@ -401,9 +407,9 @@ class Heating(object):
         elif self.events[index]['desired_temp'] == 'On':
           if self.events[index]['start_date'] < current_time and not self.events[index]['end_date'] < current_time:
             forced_on = True
-            if self.relay.one_status(1) == 0:
+            if not(self.relays_heating._status):
               logger.info('Heating forced on')
-              self.heating_on(PROPORTIONAL_HEATING_INTERVAL)
+              self.heating_on(self.config['heating_settings']['proportional_heating_interval_minutes'])
         else:
           have_temp_event = True
           break
@@ -413,8 +419,8 @@ class Heating(object):
       next_time_end = self.events[index]['end_date']
       next_temp =     self.events[index]['desired_temp']
 
-      logger.debug('Processing data: ' + str(next_time.astimezone(LOCAL_TIMEZONE)) + \
-        ' to ' + str(next_time_end.astimezone(LOCAL_TIMEZONE)) + ', ' + str(next_temp))
+      logger.debug('Processing data: ' + str(next_time.astimezone(get_localzone())) + \
+        ' to ' + str(next_time_end.astimezone(get_localzone())) + ', ' + str(next_temp))
 
       self.desired_temp = str(next_temp)
 
@@ -428,8 +434,8 @@ class Heating(object):
         new_proportional_time = None
         if next_time < current_time:
           time_due_on = next_time
-          logger.info('Currently in an event starting at ' + str(next_time.astimezone(LOCAL_TIMEZONE)) + \
-            ' ending at ' + str(next_time_end.astimezone(LOCAL_TIMEZONE)) + ' temp diff is ' + str(temp_diff))
+          logger.info('Currently in an event starting at ' + str(next_time.astimezone(get_localzone())) + \
+            ' ending at ' + str(next_time_end.astimezone(get_localzone())) + ' temp diff is ' + str(temp_diff))
 
         #Check all events for warm-up temperature
         for event in self.events:
@@ -440,18 +446,18 @@ class Heating(object):
           if event_next_time > current_time:
             event_desired_temp = event['desired_temp']
             event_temp_diff = event_desired_temp - current_temp
-            logger.debug('Future event starting at ' + str(event_next_time.astimezone(LOCAL_TIMEZONE)) + \
+            logger.debug('Future event starting at ' + str(event_next_time.astimezone(get_localzone())) + \
               ' temp difference is ' + str(event_temp_diff))
             if event_temp_diff > 0:
               #Start X minutes earlier for each degree the heating is below the desired temp, plus Y minutes.
-              event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * MINS_PER_DEGREE * 60) + (EFFECT_DELAY * 60))
-              logger.debug('Future event needs warm up, due on at ' + str(event_time_due_on.astimezone(LOCAL_TIMEZONE)))
+              event_time_due_on = event_next_time - datetime.timedelta(0,(event_temp_diff * self.config['heating_settings']['minutes_per_degree'] * 60) + (self.config['heating_settings']['effect_delay_minutes'] * 60))
+              logger.debug('Future event needs warm up, due on at ' + str(event_time_due_on.astimezone(get_localzone())))
               if time_due_on is None or event_time_due_on < time_due_on or event_time_due_on < current_time:
                 time_due_on = event_time_due_on
                 next_temp = event_desired_temp
                 temp_diff = event_temp_diff
-                logger.debug('Future event starting at ' + str(event_next_time.astimezone(LOCAL_TIMEZONE)) + \
-                  ' warm-up, now due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)))
+                logger.debug('Future event starting at ' + str(event_next_time.astimezone(get_localzone())) + \
+                  ' warm-up, now due on at ' + str(time_due_on.astimezone(get_localzone())))
                 #Full blast until 0.3 degrees difference
                 if event_temp_diff > 0.3:
                   new_proportional_time = 30
@@ -461,8 +467,8 @@ class Heating(object):
                 time_due_on = event_next_time
 
         if time_due_on < next_time:
-          logger.info('Before an event starting at ' + str(next_time.astimezone(LOCAL_TIMEZONE)) +\
-            ' temp diff is ' + str(temp_diff) + ' now due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)))
+          logger.info('Before an event starting at ' + str(next_time.astimezone(get_localzone())) +\
+            ' temp diff is ' + str(temp_diff) + ' now due on at ' + str(time_due_on.astimezone(get_localzone())))
 
         if time_due_on <= current_time:
           if temp_diff < 0:
@@ -471,68 +477,67 @@ class Heating(object):
           else:
             if new_proportional_time is None:
               #Calculate the proportional amount of time the heating needs to be on to reach the desired temperature
-              new_proportional_time = temp_diff * PROPORTIONAL_HEATING_INTERVAL / 2
+              new_proportional_time = temp_diff * self.config['heating_settings']['proportional_heating_interval_minutes'] / 2
 
-            if new_proportional_time < MIN_ACTIVE_PERIOD: #Minimum time boiler can be on to be worthwhile
-              new_proportional_time = MIN_ACTIVE_PERIOD
-            elif new_proportional_time > PROPORTIONAL_HEATING_INTERVAL:
-              new_proportional_time = PROPORTIONAL_HEATING_INTERVAL
+            if new_proportional_time < self.config['heating_settings']['minimum_active_period_minutes']: #Minimum time boiler can be on to be worthwhile
+              new_proportional_time = self.config['heating_settings']['minimum_active_period_minutes']
+            elif new_proportional_time > self.config['heating_settings']['proportional_heating_interval_minutes']:
+              new_proportional_time = self.config['heating_settings']['proportional_heating_interval_minutes']
 
             #Are we currently on or off?
-            if self.relay.one_status(1) == 0 or self.time_on is None: #Off
+            if not(self.relays_heating._status) or self.time_on is None: #Off
               if self.time_off is None:
                 time_due_on = next_time
                 new_time_due_on = next_time
               elif new_proportional_time <= self.proportional_time:
                 #Need to be on for less time - turn on in a bit
-                time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
-                new_time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (new_proportional_time * 60))
+                time_due_on = self.time_off + datetime.timedelta(0,(self.config['heating_settings']['proportional_heating_interval_minutes'] * 60) - (self.proportional_time * 60))
+                new_time_due_on = self.time_off + datetime.timedelta(0,(self.config['heating_settings']['proportional_heating_interval_minutes'] * 60) - (new_proportional_time * 60))
               else:
                 #Need to be on for more time - turn on now
-                time_due_on = self.time_off + datetime.timedelta(0,(PROPORTIONAL_HEATING_INTERVAL * 60) - (self.proportional_time * 60))
+                time_due_on = self.time_off + datetime.timedelta(0,(self.config['heating_settings']['proportional_heating_interval_minutes'] * 60) - (self.proportional_time * 60))
                 new_time_due_on = current_time
 
               if new_time_due_on <= current_time:
-                logger.info('Heating is off, due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)) +'; Turning on')
+                logger.info('Heating is off, due on at ' + str(new_time_due_on.astimezone(get_localzone())) +'; Turning on')
                 self.heating_on(new_proportional_time)
               else:
                 if new_proportional_time != self.proportional_time:
                   logger.info('Changing time next due on.')
-                  self.set_heating_trigger(new_proportional_time, self.relay.one_status(1))
+                  self.set_heating_trigger(new_proportional_time, self.relays_heating._status)
                 if time_due_on != new_time_due_on:
-                  logger.info('Heating was off, due on at ' + str(time_due_on.astimezone(LOCAL_TIMEZONE)) +\
-                                 '. Now due on at ' + str(new_time_due_on.astimezone(LOCAL_TIMEZONE)))
+                  logger.info('Heating was off, due on at ' + str(time_due_on.astimezone(get_localzone())) +\
+                                 '. Now due on at ' + str(new_time_due_on.astimezone(get_localzone())))
             else: #On
               time_due_off = self.time_on + datetime.timedelta(0,self.proportional_time * 60)
-              if new_proportional_time < PROPORTIONAL_HEATING_INTERVAL:
+              if new_proportional_time < self.config['heating_settings']['proportional_heating_interval_minutes']:
                 #Must have a time_on at this point
                 new_time_due_off = self.time_on + datetime.timedelta(0,new_proportional_time * 60)
               else:
                 new_time_due_off = next_time_end
 
               if new_time_due_off < current_time:
-                logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +'; Turning off')
+                logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(get_localzone())) +'; Turning off')
                 self.heating_off(new_proportional_time)
               else:
                 if new_proportional_time != self.proportional_time:
                   logger.info('Changing time next due off.')
-                  self.set_heating_trigger(new_proportional_time, self.relay.one_status(1))
+                  self.set_heating_trigger(new_proportional_time, self.relays_heating._status)
                 if new_time_due_off != time_due_off:
-                  logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(LOCAL_TIMEZONE)) +\
-                               '. Now due off at ' + str(new_time_due_off.astimezone(LOCAL_TIMEZONE)))
+                  logger.info('Heating was on, due off at ' + str(time_due_off.astimezone(get_localzone())) +\
+                               '. Now due off at ' + str(new_time_due_off.astimezone(get_localzone())))
 
     else:
-      self.desired_temp = str(MINIMUM_TEMP)
+      self.desired_temp = str(self.config['heating_settings']['minimum_temperature'])
+      #If we don't have an event yet, warn and ensure relay is off
+      logger.info('No events available')
+      if self.relays_heating._status:
+        logger.debug('Heating off')
+        self.heating_off(0)
       if have_preheat:
-        #If we don't have an event yet, warn and ensure relay is off
         logger.info('Preheat but no normal event available.')
-        if self.relay.one_status(1) == 1:
-          logger.debug('Heating off')
-          self.heating_off(0)
       else:
-        self.desired_temp = str(MINIMUM_TEMP)
-        logger.info('No events available,')
-        if self.relay.one_status(2) == 1:
+        if self.relays_preheat._status:
           logger.debug('Preheat off')
           self.preheat_off()
 
@@ -573,10 +578,6 @@ class Heating(object):
     logger.debug('DarkSky details: ' + str(details))
     return details
 
-class NoTemperatureException(Exception):
-  def __init__(self):
-    super(self, Exception)
-
 if __name__ == '__main__':
   btle.Debugging = True
   logger = logging.getLogger('heating')
@@ -588,10 +589,10 @@ if __name__ == '__main__':
 
     msg = MIMEText('Heating error:\n\n' + str(e))
     msg['Subject'] = 'Heating: Exception in main thread'
-    msg['From'] = EMAIL_FROM
-    msg['To'] = EMAIL_TO
-    smtp = smtplib.SMTP(EMAIL_SERVER)
-    smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
+    msg['From'] = heating.config['email_settings']['from']
+    msg['To'] = heating.config['email_settings']['to']
+    smtp = smtplib.SMTP(heating.config['email_settings']['server'])
+    smtp.sendmail(heating.config['email_settings']['from'], [heating.config['email_settings']['to']], msg.as_string())
     smtp.quit()
 
     if heating.temp_sensors:
@@ -601,8 +602,8 @@ if __name__ == '__main__':
         except Exception as e1:
           pass
 
-    if heating.relay:
-      heating.relay.all_off()
+    if heating.relays:
+      heating.relays.all_off()
 
     if heating.http_server:
         heating.http_server.shutdown()

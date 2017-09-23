@@ -36,8 +36,9 @@ class SingleRelay():
     logger.info("Relay " + str(self._hid_device.address) + " off")
     self._status = False
 
-  def address(self):
-    return self._hid_device.address
+  @property
+  def port_numbers(self):
+    return self._hid_device.port_numbers
 
 class USBMultipleRelays(Relay):
   def __init__(self,relays):
@@ -87,12 +88,10 @@ class USBMultipleRelays(Relay):
   @staticmethod
   def find_relays():
     hid_devices = usb.core.find(find_all=True,idVendor=0x16c0,idProduct=0x05df)
-    temp = []
+    relays = []
     for hid_device in hid_devices:
-      temp.append(SingleRelay(hid_device))
-    if len(temp) < 1:
+      relays.append(SingleRelay(hid_device))
+    if len(relays) < 1:
       raise Exception("No relays found")
-
-    relays = sorted(temp, key=lambda relay: relay.address())
 
     return USBMultipleRelays(relays)

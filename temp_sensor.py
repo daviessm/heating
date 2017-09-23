@@ -193,3 +193,6 @@ class NoTagsFoundException(Exception):
 class DisconnectedException(Exception):
   pass
 
+class NoTemperatureException(Exception):
+  pass
+
